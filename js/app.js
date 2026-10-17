@@ -944,7 +944,7 @@ async function sendChat(raw) {
     const handled = await routeQuery(q);
     if (handled) return;
   } catch (err) {
-    addBotMessage(`<p>出了点问题：${escapeHtml(err.message)}</p>`);
+    addBotMessage(`<p style="color:var(--accent)">${escapeHtml(aiExplainError(err))}</p>`);
   }
 }
 
@@ -1081,10 +1081,40 @@ async function askExplain(text, start, end, echo = true) {
     bubble.parentElement.appendChild(tools);
   } catch (err) {
     updateUsageUI();
-    bubble.innerHTML = `<p>调用模型失败：${escapeHtml(err.message)}</p><p style="font-size:11px;color:var(--ink-3)">检查设置里的接口地址、模型名与 Key；国内服务商建议通过本应用的启动脚本运行（内置代理可绕过跨域限制）。</p>`;
+    showChatError(bubble, err, () => askExplain(text, start, end, false));
   } finally {
     state.busy = false;
   }
+}
+
+/* 把模型/网络错误翻译成小白能看懂的话 */
+function aiExplainError(err) {
+  const m = (err && err.message) || '未知错误';
+  if (/API Key|鉴权|401/.test(m)) return 'API Key 不对或失效了。请到「设置 → 大模型」重新填一次 Key。';
+  if (/尚未配置/.test(m)) return '还没配置大模型。到「设置 → 大模型」填好接口地址、模型名和 Key 再用。';
+  if (/404|接口地址|模型名/.test(m)) return '接口地址或模型名填错了。到设置里核对服务商、地址与模型名。';
+  if (/超时|timeout|已取消|abort/i.test(m)) return '模型响应太慢或中途断了。稍等一会，点「重试」即可。';
+  if (/余额|欠费|quota|insufficient|限流|rate limit/i.test(m)) return '模型账户可能余额不足或被限流，请到服务商后台看看。';
+  if (/Failed to fetch|NetworkError|跨域|CORS|load failed|网络错误|网络不佳/i.test(m)) return '连不上模型服务，多半是浏览器跨域限制或网络问题。用本应用的启动脚本运行可绕过跨域；也可检查接口地址是否正确。';
+  return '调用模型出错了：' + m;
+}
+/* 在气泡里渲染一条友好错误 + 重试按钮 */
+function showChatError(bubble, err, retry) {
+  bubble.innerHTML = `<p style="color:var(--accent);margin:0">${escapeHtml(aiExplainError(err))}</p>`;
+  const bar = document.createElement('div');
+  bar.className = 'msg-tools';
+  const btn = document.createElement('button');
+  btn.className = 'mini-btn';
+  btn.textContent = '重试';
+  btn.dataset.retryChat = '1';
+  if (typeof retry === 'function') btn._retry = retry; else btn.disabled = true;
+  bar.appendChild(btn);
+  const set = document.createElement('button');
+  set.className = 'mini-btn';
+  set.textContent = '检查设置';
+  set.dataset.settings = '1';
+  bar.appendChild(set);
+  (bubble.parentElement || bubble).appendChild(bar);
 }
 
 /* 通用问答 */
@@ -1118,13 +1148,17 @@ async function askGeneric(q, forcedKeyword) {
     return;
   }
 
+  const history = state.chat.slice(-7, -1)
+    .filter(m => m && m.content)
+    .map(m => ({ role: m.role === 'bot' ? 'assistant' : 'user', content: String(m.content).slice(0, 1000) }));
+
   const bubble = addBotMessage('<span class="typing"><i></i><i></i><i></i></span>', { save: false });
   let acc = '';
   state.busy = true;
   try {
     await ai.askAI(ai.promptChat(state.book, q, passages.map(p => ({
       chapter: cleanTitle(p.chapter), text: p.raw
-    })), cleanTitle(state.book.chapters[state.chapter].title)), {
+    })), cleanTitle(state.book.chapters[state.chapter].title), history), {
       maxTokens: 2000,
       onDelta: (d) => { acc += d; bubble.innerHTML = ai.mdToHtml(acc); scrollChat(); }
     });
@@ -1137,11 +1171,12 @@ async function askGeneric(q, forcedKeyword) {
       if (seen.has(p.chapter)) return false;
       seen.add(p.chapter); return true;
     }).slice(0, 3).map(p => `<button class="mini-btn" data-goto="${p.start}">${escapeHtml(cleanTitle(p.chapter).slice(0, 10))}</button>`).join('');
-    tools.innerHTML = `<button class="mini-btn" data-copy-html="1">复制回答</button><button class="mini-btn" data-save-msg="1">存为笔记</button>` + jumpBtns;
+    tools.innerHTML = `<button class="mini-btn" data-copy-html="1">复制回答</button><button class="mini-btn" data-save-msg="1">存为笔记</button>` + jumpBtns
+      + `<button class="mini-btn" data-follow="展开讲讲">展开讲讲</button><button class="mini-btn" data-follow="举个例子">举个例子</button>`;
     bubble.parentElement.appendChild(tools);
   } catch (err) {
     updateUsageUI();
-    bubble.innerHTML = `<p>调用模型失败：${escapeHtml(err.message)}</p>`;
+    showChatError(bubble, err, () => askGeneric(q, forcedKeyword));
   } finally {
     state.busy = false;
   }
@@ -1241,8 +1276,15 @@ $('#searchResults').addEventListener('click', (e) => {
   if (item) gotoOffset(+item.dataset.goto);
 });
 $('#chat').addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-jump],[data-goto],[data-copy],[data-copy-text],[data-copy-html],[data-settings],[data-outline],[data-save-note],[data-save-msg]');
+  const t = e.target.closest('[data-jump],[data-goto],[data-copy],[data-copy-text],[data-copy-html],[data-settings],[data-outline],[data-save-note],[data-save-msg],[data-follow],[data-retry-chat]');
   if (!t) return;
+  if (t.dataset.retryChat) {
+    const cb = t._retry, bar = t.closest('.msg-tools');
+    if (bar) bar.remove();
+    if (typeof cb === 'function') cb();
+    return;
+  }
+  if (t.dataset.follow) { sendChat(t.dataset.follow); return; }
   if (t.dataset.jump) { renderReader(+t.dataset.jump); closePanelIfMobile(); }
   if (t.dataset.goto) { gotoOffset(+t.dataset.goto); }
   if (t.dataset.copy) {
@@ -1807,20 +1849,23 @@ async function showOutline(type, question, force = false) {
   btnCopy.disabled = true; btnSave.disabled = true;
   state.outline = { type, chapterIndex: state.chapter, md: '', html: '', cacheKey };
 
+  let failed = false;
   const finish = () => {
     applySavedCore(body, state.book.id);
     const pane = body.querySelector('#wAnalyze');
     state.outline.html = pane ? pane.innerHTML : body.innerHTML;
-    const entry = {
-      html: state.outline.html,
-      md: state.outline.md || '',
-      form: {
-        premise: $('#fwPremise')?.value || '',
-        genre: $('#fwGenre')?.value || ''
-      }
-    };
-    outlineCache.set(cacheKey, entry);
-    if (state.book.kind !== 'draft') db.setKV('outline.' + cacheKey, entry);
+    if (!failed) {
+      const entry = {
+        html: state.outline.html,
+        md: state.outline.md || '',
+        form: {
+          premise: $('#fwPremise')?.value || '',
+          genre: $('#fwGenre')?.value || ''
+        }
+      };
+      outlineCache.set(cacheKey, entry);
+      if (state.book.kind !== 'draft') db.setKV('outline.' + cacheKey, entry);
+    }
     btnCopy.disabled = false; btnSave.disabled = false;
   };
 
@@ -1868,8 +1913,9 @@ async function showOutline(type, question, force = false) {
       aiBox.innerHTML = '<h3>写作教练</h3>' + ai.mdToHtml(acc);
       if (ai.wasTruncated()) setupContinue(aiBox, wMsgs, { value: acc }, 4500);
     } catch (err) {
-      aiBox.innerHTML = `<h3>写作教练</h3><p style="color:var(--accent)">失败：${escapeHtml(err.message)}</p>`;
-      $('#outlineHint').textContent = '模型调用失败';
+      failed = true;
+      aiBox.innerHTML = `<h3>写作教练</h3><p style="color:var(--accent)">${escapeHtml(aiExplainError(err))}</p>`;
+      $('#outlineHint').innerHTML = '<span class="regen-link" id="regenBtn">生成失败，点此重试</span>';
     }
     finish();
     return;
@@ -1899,10 +1945,11 @@ async function showOutline(type, question, force = false) {
       body.innerHTML = ai.mdToHtml(acc) + card;
       if (ai.wasTruncated()) setupContinue(body, chMsgs, { value: acc }, 2800);
     } catch (err) {
-      body.innerHTML = `<p style="color:var(--accent)">模型调用失败：${escapeHtml(err.message)}</p>
+      failed = true;
+      body.innerHTML = `<p style="color:var(--accent)">${escapeHtml(aiExplainError(err))}</p>
         <p style="font-size:11.5px;color:var(--ink-3)">下面是本地生成的章节统计，可先用着。</p>` +
         ai.localChapterOutline(state.book, ch, text) + card;
-      $('#outlineHint').textContent = '调用失败 · 已回退本地';
+      $('#outlineHint').innerHTML = '<span class="regen-link" id="regenBtn">生成失败 · 点此重试</span>';
     }
     finish();
     return;
@@ -2010,8 +2057,9 @@ async function showOutline(type, question, force = false) {
     }
     if (ai.wasTruncated()) setupContinue(aiBox, bookMsgs, { value: acc }, 2400);
   } catch (err) {
-    aiBox.innerHTML = `<h3 id="secAIH">模型意见</h3><p style="color:var(--accent)">失败：${escapeHtml(err.message)}</p>`;
-    $('#outlineHint').textContent = '模型调用失败';
+    failed = true;
+    aiBox.innerHTML = `<h3 id="secAIH">模型意见</h3><p style="color:var(--accent)">${escapeHtml(aiExplainError(err))}</p>`;
+    $('#outlineHint').innerHTML = '<span class="regen-link" id="regenBtn">生成失败，点此重试</span>';
   }
   finish();
 }
