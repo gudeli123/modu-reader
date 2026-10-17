@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>墨读 · 把经典读成自己的</title>
+<meta name="theme-color" content="#f7f2e8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="墨读">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
+</head>
+<body>
+
+<div id="app" class="app">
+
+  <!-- ══════════ 左侧：书架 / 目录 ══════════ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">墨</div>
+      <div class="brand-text">
+        <strong>墨读</strong>
+        <span>MODU READER</span>
+      </div>
+    </div>
+
+    <button class="btn-import" id="btnImport">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      导入书籍
+    </button>
+    <button class="btn-draft" id="btnImportDraft">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+      导入我的稿
+    </button>
+    <input type="file" id="fileInput" multiple accept=".txt,.md,.docx,.epub,.pdf" hidden>
+    <input type="file" id="fileInputDraft" multiple accept=".txt,.md,.docx" hidden>
+
+    <div class="side-scroll">
+      <!-- 书架视图 -->
+      <div id="shelfView">
+        <div class="side-label">我的书架 <span id="shelfCount"></span></div>
+        <div class="shelf" id="shelf"></div>
+        <div class="shelf-empty" id="shelfEmpty">
+          <p>书架还是空的。</p>
+          <p class="dim">导入 txt / docx / epub / pdf<br>开始你的第一本书。</p>
+        </div>
+      </div>
+
+      <!-- 目录视图 -->
+      <div id="tocView" hidden>
+        <button class="back-shelf" id="btnBackShelf">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+          返回书架
+        </button>
+        <div class="toc-book">
+          <h3 id="tocBookTitle"></h3>
+          <p id="tocBookMeta"></p>
+        </div>
+        <div class="toc-actions">
+          <button class="mini-btn" id="btnBookFramework">拆书</button>
+          <button class="mini-btn" id="btnRangeSelect">分析选段</button>
+        </div>
+        <div class="range-bar" id="rangeBar" hidden>
+          <span class="range-bar-text" id="rangeBarText">点选起点章节</span>
+          <button class="mini-btn" id="btnRangeGo" disabled>开始分析</button>
+          <button class="mini-btn" id="btnRangeCancel">取消</button>
+        </div>
+        <div class="side-label">目录 <span id="tocCount"></span></div>
+        <div class="toc-list" id="tocList"></div>
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <button class="foot-btn" id="btnLibrary" title="拆书库">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-2z"/><path d="M8 7h6M8 11h6"/></svg>
+        拆书库
+      </button>
+      <button class="foot-btn" id="btnSettings" title="设置">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        设置
+      </button>
+      <button class="foot-btn" id="btnHelp" title="使用说明">?</button>
+    </div>
+  </aside>
+
+  <!-- ══════════ 中间：主区 ══════════ -->
+  <main class="main" id="main">
+
+    <!-- 空状态 / 欢迎页 -->
+    <section class="welcome" id="welcome">
+      <button class="icon-btn only-mobile welcome-menu" id="btnMobileShelf2" title="书架">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="welcome-inner">
+        <div class="welcome-kicker">PERSONAL READING LIBRARY</div>
+        <h1>把经典，<br>读成自己的。</h1>
+        <p class="welcome-sub">导入一本书，随时发问，随手批注。<br>所有文字与笔记，只留在你自己的设备上。</p>
+        <div class="dropzone" id="dropzone">
+          <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5-5 5 5"/><path d="M12 5v12"/></svg>
+          <strong>拖拽文件到这里</strong>
+          <span>或点击选择 · 支持 TXT / DOCX / EPUB / PDF</span>
+        </div>
+        <div class="welcome-foot">
+          <span>长按选中文字 → 高亮 · 笔记 · 解释</span>
+          <span class="dot">·</span>
+          <span>对助手说「读第三回」即可定位</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 阅读器 -->
+    <section class="reader-wrap" id="readerWrap" hidden>
+      <header class="topbar">
+        <button class="icon-btn only-mobile" id="btnMobileShelf" title="书架">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <button class="icon-btn" id="btnHome" title="回书架">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5L12 4l9 7.5"/><path d="M5 10v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V10"/></svg>
+        </button>
+        <div class="topbar-title" id="topbarTitle"></div>
+        <div class="topbar-spacer"></div>
+        <button class="icon-btn" id="btnSearch" title="全文检索 ( / )">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        </button>
+        <button class="icon-btn" id="btnAssistant" title="读书助手">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.1A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4z"/></svg>
+          <span class="assistant-dot"></span>
+        </button>
+        <button class="icon-btn" id="btnInline" title="文内批注">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6.5a2.1 2.1 0 0 0-3-3L6 14.5V18h3.5z"/><path d="M13.5 7l3 3"/></svg>
+        </button>
+        <div class="aa-wrap">
+          <button class="icon-btn" id="btnType" title="排版">Aa</button>
+          <div class="type-pop" id="typePop" hidden>
+            <div class="type-row">
+              <label>字号</label>
+              <div class="stepper">
+                <button data-font="-1">A−</button><span id="fontVal">18</span><button data-font="1">A+</button>
+              </div>
+            </div>
+            <div class="type-row">
+              <label>行距</label>
+              <input type="range" id="lineRange" min="1.5" max="2.4" step="0.1" value="1.9">
+            </div>
+            <div class="type-row">
+              <label>字体</label>
+              <div class="seg" id="fontSeg">
+                <button data-fontfamily="serif" class="on">宋</button>
+                <button data-fontfamily="kai">楷</button>
+                <button data-fontfamily="sans">黑</button>
+              </div>
+            </div>
+            <div class="type-row">
+              <label>主题</label>
+              <div class="seg" id="themeSeg">
+                <button data-theme="paper" class="on">纸</button>
+                <button data-theme="white">白</button>
+                <button data-theme="night">夜</button>
+              </div>
+            </div>
+            <div class="type-row">
+              <label>首行缩进</label>
+              <button class="switch on" id="indentSwitch"></button>
+            </div>
+            <div class="type-row">
+              <label>朗读</label>
+              <button class="mini-btn" id="btnSpeak">读这一章</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="reader-scroll" id="readerScroll">
+        <article class="reader" id="reader"></article>
+        <div class="chapter-nav">
+          <button id="btnPrevChapter">← 上一章</button>
+          <button id="btnNextChapter">下一章 →</button>
+        </div>
+        <div class="reader-tail"></div>
+      </div>
+
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    </section>
+
+    <!-- 导入进度遮罩 -->
+    <div class="importing" id="importing" hidden>
+      <div class="importing-card">
+        <div class="spinner"></div>
+        <strong id="importingTitle">正在解析…</strong>
+        <span id="importingSub">文件只在本地处理</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- ══════════ 右侧面板 ══════════ -->
+  <aside class="panel" id="panel" hidden>
+    <div class="panel-head">
+      <div class="panel-tabs" id="panelTabs">
+        <button data-tab="assistant" class="on">读书助手</button>
+        <button data-tab="notes">笔记</button>
+        <button data-tab="search">检索</button>
+        <button data-tab="materials">素材</button>
+        <button data-tab="create">创作</button>
+      </div>
+      <button class="icon-btn small" id="btnClosePanel">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- 助手 -->
+    <div class="panel-body" id="tab-assistant">
+      <div class="chat" id="chat"></div>
+      <div class="chat-input-wrap">
+        <div class="quick-chips" id="quickChips">
+          <button data-q="梳理本章的脉络">这章怎么写</button>
+          <button data-q="梳理全书框架">拆这本书</button>
+          <button data-q="这本书的写作技法有什么可以借鉴">能抄哪些</button>
+        </div>
+        <div class="chat-input">
+          <textarea id="chatInput" rows="1" placeholder="说「读第三回」「解释黛玉进贾府」…"></textarea>
+          <button id="btnSend">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+          </button>
+        </div>
+        <div class="chat-hint"><span id="chatHint"></span><span id="usageHint"></span></div>
+      </div>
+    </div>
+
+    <!-- 笔记 -->
+    <div class="panel-body" id="tab-notes" hidden>
+      <div class="notes-toolbar">
+        <div class="note-filter" id="noteFilter">
+          <button data-f="all" class="on">全部</button>
+          <button data-f="note">有笔记</button>
+          <button data-f="highlight">仅标记</button>
+          <button data-f="ai">AI</button>
+        </div>
+        <button class="mini-btn" id="btnExportNotes">导出</button>
+      </div>
+      <div class="notes-list" id="notesList"></div>
+    </div>
+
+    <!-- 素材 -->
+    <div class="panel-body" id="tab-materials" hidden>
+      <div class="notes-toolbar">
+        <div class="note-filter" id="matFilter">
+          <button data-m="all" class="on">全部</button>
+          <button data-m="action">动作</button>
+          <button data-m="face">神态</button>
+          <button data-m="sense">生理</button>
+          <button data-m="beat">对话</button>
+          <button data-m="mood">氛围</button>
+        </div>
+        <button class="mini-btn" id="btnExportMat">导出</button>
+      </div>
+      <div class="notes-list" id="materialsList"></div>
+    </div>
+
+    <!-- 检索 -->
+    <div class="panel-body" id="tab-search" hidden>
+      <div class="search-box">
+        <input type="search" id="searchInput" placeholder="在本书中检索…">
+      </div>
+      <div class="search-meta" id="searchMeta"></div>
+      <div class="search-results" id="searchResults"></div>
+    </div>
+
+    <!-- 创作 -->
+    <div class="panel-body" id="tab-create" hidden>
+      <div class="create-form">
+        <div class="create-row">
+          <span class="create-label">范围</span>
+          <div class="seg" id="createScope">
+            <button data-scope="book" class="on">全书</button>
+            <button data-scope="chapter">本章</button>
+            <button data-scope="selection">选中文段</button>
+          </div>
+        </div>
+        <div class="create-row">
+          <span class="create-label">生成</span>
+          <div class="seg" id="createType">
+            <button data-type="plot" class="on">情节</button>
+            <button data-type="char">人物</button>
+            <button data-type="scene">描写</button>
+          </div>
+        </div>
+        <textarea id="createReq" rows="2" placeholder="一句话要求（可空）：一个反派 / 主角的初恋 / 一场高潮打斗"></textarea>
+        <div class="create-acts">
+          <button class="mini-btn" id="btnCreate">生成</button>
+          <button class="mini-btn" id="btnCreateSave" hidden>保存这条设定</button>
+          <span class="create-context-tip" id="createContextTip" hidden>已带入已保存的设定</span>
+        </div>
+        <div id="createOut"></div>
+      </div>
+      <div class="create-saved">
+        <div class="notes-toolbar">
+          <div class="note-filter" id="createFilter">
+            <button data-c="all" class="on">全部</button>
+            <button data-c="plot">情节</button>
+            <button data-c="char">人物</button>
+            <button data-c="scene">描写</button>
+          </div>
+          <button class="mini-btn" id="btnExportCreate">导出</button>
+        </div>
+        <div class="notes-list" id="createList"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ══════════ 浮层：选中工具条 ══════════ -->
+  <div class="sel-toolbar" id="selToolbar" hidden>
+    <div class="swatches">
+      <button data-color="yellow" class="sw yellow" title="黄色"></button>
+      <button data-color="green" class="sw green" title="绿色"></button>
+      <button data-color="blue" class="sw blue" title="蓝色"></button>
+      <button data-color="pink" class="sw pink" title="粉色"></button>
+      <button data-color="purple" class="sw purple" title="紫色"></button>
+    </div>
+    <div class="sel-sep"></div>
+    <button class="sel-act" data-act="note">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+      笔记
+    </button>
+    <button class="sel-act" data-act="explain">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+      解释
+    </button>
+    <button class="sel-act" data-act="copy">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      复制
+    </button>
+    <button class="sel-act" data-act="ask">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.1A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4z"/></svg>
+      问助手
+    </button>
+    <button class="sel-act danger" data-act="remove" hidden>
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+      取消标记
+    </button>
+  </div>
+
+  <!-- ══════════ 弹窗：笔记编辑 ══════════ -->
+  <div class="modal-mask" id="noteMask" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <strong>笔记</strong>
+        <button class="icon-btn small" id="noteClose">✕</button>
+      </div>
+      <blockquote class="quote" id="noteQuote"></blockquote>
+      <textarea id="noteText" rows="5" placeholder="写下你的想法…"></textarea>
+      <div class="modal-foot">
+        <button class="btn-ghost" id="noteDelete">删除标记</button>
+        <div class="spacer"></div>
+        <button class="btn-primary" id="noteSave">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 弹窗：设置 ══════════ -->
+  <div class="modal-mask" id="settingsMask" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <strong>设置</strong>
+        <button class="icon-btn small" id="settingsClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <section class="set-group">
+          <h4>大模型（可选）</h4>
+          <p class="set-desc">不配置也能用：本地模式提供检索、人物词频、章节骨架。配置后「解释」「框架梳理」由模型生成。Key 只存在本机浏览器。</p>
+          <label class="field">
+            <span>服务商</span>
+            <select id="aiPreset">
+              <option value="">— 选择预设 —</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="kimi">Kimi / Moonshot</option>
+              <option value="zhipu">智谱 GLM</option>
+              <option value="qwen">通义千问</option>
+              <option value="openai">OpenAI</option>
+              <option value="custom">自定义（OpenAI 兼容）</option>
+            </select>
+          </label>
+          <label class="field"><span>接口地址</span><input id="aiBase" placeholder="https://api.deepseek.com/v1" autocomplete="off"></label>
+          <label class="field"><span>模型</span><input id="aiModel" placeholder="deepseek-chat" autocomplete="off"></label>
+          <label class="field"><span>API Key</span><input id="aiKey" type="password" placeholder="sk-..." autocomplete="off"></label>
+          <div class="set-actions">
+            <button class="btn-ghost" id="btnTestAI">测试连接</button>
+            <span id="aiStatus" class="ai-status"></span>
+          </div>
+          <label class="field"><span>输入单价</span><input id="aiPriceIn" type="number" step="0.01" placeholder="2" autocomplete="off"><em class="unit">元 / 百万 tokens</em></label>
+          <label class="field"><span>输出单价</span><input id="aiPriceOut" type="number" step="0.01" placeholder="8" autocomplete="off"><em class="unit">元 / 百万 tokens</em></label>
+          <p class="set-desc" style="margin:6px 0 0">按服务商官网价格填。只用于估算，不产生实际扣费。</p>
+        </section>
+
+        <section class="set-group">
+          <h4>用量</h4>
+          <div class="usage-box" id="usageBox"></div>
+          <div class="set-actions">
+            <button class="btn-ghost" id="btnResetUsage">清零统计</button>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h4>数据</h4>
+          <p class="set-desc">书籍解析后的全文与笔记都保存在浏览器 IndexedDB 中。换电脑请用备份文件迁移。</p>
+          <div class="set-actions">
+            <button class="btn-ghost" id="btnExportAll">导出全部备份</button>
+            <button class="btn-ghost" id="btnImportAll">导入备份</button>
+            <button class="btn-ghost danger" id="btnClearAll">清空数据</button>
+          </div>
+          <input type="file" id="backupInput" accept=".json" hidden>
+          <div class="storage-line" id="storageLine"></div>
+        </section>
+
+        <section class="set-group">
+          <h4>关于</h4>
+          <p class="set-desc">墨读 · 本地优先的经典阅读器。文档不上传任何服务器，AI 请求直接从你的浏览器（或本地代理）发往你选择的服务商。</p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- 通用提示 -->
+  <div class="toast" id="toast"></div>
+
+  <!-- ══════════ 弹窗：拆书库 ══════════ -->
+  <div class="modal-mask" id="libraryMask" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <strong>拆书库</strong>
+        <button class="icon-btn small" id="libraryClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="search" id="librarySearch" placeholder="按书名 / 核心梗 / 一句话判断检索…">
+        <div class="lib-list" id="libraryList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 笔记/框架 阅读抽屉 -->
+  <div class="modal-mask" id="outlineMask" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <strong id="outlineTitle">框架梳理</strong>
+        <button class="icon-btn small" id="outlineClose">✕</button>
+      </div>
+      <div class="modal-body outline-body" id="outlineBody"></div>
+      <div class="modal-foot">
+        <span class="outline-hint" id="outlineHint"></span>
+        <div class="spacer"></div>
+        <button class="btn-ghost" id="btnOutlineCopy">复制</button>
+        <button class="btn-primary" id="btnOutlineSave">存为笔记</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- vendor 库（jszip / mammoth / pdf.js）改为按需动态加载，首屏更快；加载逻辑见 js/parse.js -->
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
