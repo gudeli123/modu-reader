@@ -13,6 +13,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles-desk.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
 </head>
 <body>
@@ -206,6 +207,7 @@
         <button data-tab="search">检索</button>
         <button data-tab="materials">素材</button>
         <button data-tab="create">创作</button>
+        <button data-tab="desk">工位</button>
       </div>
       <button class="icon-btn small" id="btnClosePanel">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -310,6 +312,9 @@
         <div class="notes-list" id="createList"></div>
       </div>
     </div>
+
+    <!-- 工位：写作 / 连载 / 台账（内容由 renderDesk 动态渲染） -->
+    <div class="panel-body" id="tab-desk" hidden></div>
   </aside>
 
   <!-- ══════════ 浮层：选中工具条 ══════════ -->
