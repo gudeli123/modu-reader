@@ -1,7 +1,7 @@
 /* IndexedDB 封装 —— 所有数据只在本机 */
 
 const DB_NAME = 'modu-reader';
-const DB_VER = 4;
+const DB_VER = 5;
 let _db = null;
 
 export function openDB() {
@@ -35,6 +35,11 @@ export function openDB() {
       }
       if (!db.objectStoreNames.contains('creations')) {
         const s = db.createObjectStore('creations', { keyPath: 'id' });
+        s.createIndex('bookId', 'bookId');
+      }
+      /* v5 新增：伏笔 / 线头台账 */
+      if (!db.objectStoreNames.contains('threads')) {
+        const s = db.createObjectStore('threads', { keyPath: 'id' });
         s.createIndex('bookId', 'bookId');
       }
     };
@@ -102,7 +107,7 @@ export const getText = async (id) => {
 export const putText = (bookId, content) => put('texts', { bookId, content });
 export async function removeBook(id) {
   const db = await openDB();
-  const t = db.transaction(['books', 'texts', 'marks', 'notes'], 'readwrite');
+  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'threads'], 'readwrite');
   t.objectStore('books').delete(id);
   t.objectStore('texts').delete(id);
   const mi = t.objectStore('marks').index('bookId');
@@ -116,6 +121,12 @@ export async function removeBook(id) {
   nreq.onsuccess = (e) => {
     const c = e.target.result;
     if (c) { t.objectStore('notes').delete(c.primaryKey); c.continue(); }
+  };
+  const ti = t.objectStore('threads').index('bookId');
+  const treq = ti.openKeyCursor(IDBKeyRange.only(id));
+  treq.onsuccess = (e) => {
+    const c = e.target.result;
+    if (c) { t.objectStore('threads').delete(c.primaryKey); c.continue(); }
   };
   await doneP(t);
 }
@@ -156,6 +167,14 @@ export const listCreationsByBook = (bookId) => byIndex('creations', 'bookId', bo
 export const putCreation = (c) => put('creations', c);
 export const deleteCreation = (id) => del('creations', id);
 
+/* ── 伏笔 / 线头台账（v5） ── */
+export const listThreads = async (bookId) => {
+  const ts = await byIndex('threads', 'bookId', bookId);
+  return ts.sort((a, b) => a.offset - b.offset);
+};
+export const putThread = (t) => put('threads', t);
+export const deleteThread = (id) => del('threads', id);
+
 /* ── KV ── */
 export async function getKV(k, def = null) {
   const r = await get('kv', k);
@@ -165,16 +184,16 @@ export const setKV = (k, v) => put('kv', { k, v });
 
 /* ── 备份 ── */
 export async function exportAll() {
-  const [books, texts, marks, notes, materials, reports, creations] = await Promise.all([
-    all('books'), all('texts'), all('marks'), all('notes'), all('materials'), all('reports'), all('creations')
+  const [books, texts, marks, notes, materials, reports, creations, threads] = await Promise.all([
+    all('books'), all('texts'), all('marks'), all('notes'), all('materials'), all('reports'), all('creations'), all('threads')
   ]);
-  return { app: 'modu-reader', version: 4, exportedAt: new Date().toISOString(), books, texts, marks, notes, materials, reports, creations };
+  return { app: 'modu-reader', version: 5, exportedAt: new Date().toISOString(), books, texts, marks, notes, materials, reports, creations, threads };
 }
 
 export async function importAll(data) {
   if (!data || data.app !== 'modu-reader') throw new Error('不是墨读的备份文件');
   const db = await openDB();
-  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations'], 'readwrite');
+  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations', 'threads'], 'readwrite');
   for (const b of data.books || []) t.objectStore('books').put(b);
   for (const x of data.texts || []) t.objectStore('texts').put(x);
   for (const m of data.marks || []) t.objectStore('marks').put(m);
@@ -182,14 +201,15 @@ export async function importAll(data) {
   for (const m of data.materials || []) t.objectStore('materials').put(m);
   for (const r of data.reports || []) t.objectStore('reports').put(r);
   for (const c of data.creations || []) t.objectStore('creations').put(c);
+  for (const th of data.threads || []) t.objectStore('threads').put(th);
   await doneP(t);
   return (data.books || []).length;
 }
 
 export async function clearAll() {
   const db = await openDB();
-  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations'], 'readwrite');
-  ['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations'].forEach(s => t.objectStore(s).clear());
+  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations', 'threads'], 'readwrite');
+  ['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations', 'threads'].forEach(s => t.objectStore(s).clear());
   await doneP(t);
 }
 
