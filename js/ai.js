@@ -332,12 +332,16 @@ ${digest}
 }
 
 /* 自由问答 */
-export function promptChat(book, question, passages, chapterTitle) {
+export function promptChat(book, question, passages, chapterTitle, history = []) {
   const ctx = passages.length
     ? passages.map((p, i) => `【片段${i + 1} · ${p.chapter}】\n${p.text}`).join('\n\n')
     : '（未检索到直接相关的原文片段）';
+  const hist = (history || [])
+    .filter(m => m && m.content)
+    .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content).slice(0, 1200) }));
   return [
-    { role: 'system', content: SYS + `\n6. 回答尽量引用原文，引用时用 > 标出，并注明章节。` },
+    { role: 'system', content: SYS + `\n6. 回答尽量引用原文，引用时用 > 标出，并注明章节。\n7. 若上文对话与当前问题相关，请自然衔接，不要重复已说过的内容；若当前问题依赖上一轮，直接接着答。` },
+    ...hist,
     {
       role: 'user', content: `我在读${bookMeta(book)}${chapterTitle ? `，当前在「${chapterTitle}」` : ''}。
 
