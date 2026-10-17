@@ -8,6 +8,7 @@
 import * as db from './db.js';
 import { parseFile, escapeHtml, cnToNum, readingTime, ocrPdf, splitChapters } from './parse.js';
 import * as ai from './ai.js';
+import * as writer from './writer.js';
 
 /* 全局错误兜底：记录未捕获异常，避免个别错误导致白屏且无从排查 */
 window.addEventListener('error', (e) => {
@@ -249,6 +250,10 @@ async function openBook(id, opts = {}) {
   state.notes = await db.listNotes(id);
   state.chat = [];
   state.searchQuery = '';
+  state.deskChapter = null;
+  state.consistencyHTML = '';
+  state.threads = null;
+  state.threadsBookId = null;
   state.notes = state.notes || [];
 
   $('#welcome').hidden = true;
@@ -830,10 +835,11 @@ function closePanelIfMobile() { if (window.innerWidth <= 900) closePanel(); }
 function switchTab(tab) {
   state.panelTab = tab;
   $$('#panelTabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  ['assistant', 'notes', 'search', 'materials', 'create'].forEach(t => $('#tab-' + t).hidden = t !== tab);
+  ['assistant', 'notes', 'search', 'materials', 'create', 'desk'].forEach(t => $('#tab-' + t).hidden = t !== tab);
   if (tab === 'notes') renderNotes();
   if (tab === 'materials') renderMaterials();
   if (tab === 'create') renderCreateList();
+  if (tab === 'desk') renderDesk();
   if (tab === 'search') { $('#searchInput').focus(); renderSearch(); }
 }
 
@@ -844,6 +850,304 @@ $('#panelTabs').addEventListener('click', (e) => {
 $('#btnClosePanel').addEventListener('click', closePanel);
 $('#btnAssistant').addEventListener('click', () => openPanel('assistant'));
 $('#btnSearch').addEventListener('click', () => openPanel('search'));
+
+/* ══════════════════════ 工位（写作 / 连载 / 台账） ══════════════════════ */
+async function renderDesk() {
+  const body = $('#tab-desk');
+  if (!body) return;
+  const book = state.book;
+  if (!book) {
+    body.innerHTML = '<div class="desk-empty">先打开一本书，或点「导入我的稿」把连载导进来。<br><span class="dim">工位：日更追踪 · 存稿进度 · 续写本章 · 伏笔台账 · 人物一致性 · 审稿处方 · 过审自查 · AI 味检测 · 平台导出</span></div>';
+    return;
+  }
+  const content = state.content || '';
+  const isDraft = book.kind === 'draft';
+  const wp = writer.getWriterPrefs();
+  const goal = wp.goal || 3000;
+  const st = writer.stashStats(book, content, goal);
+  const today = writer.todayWords();
+  const streakN = writer.streak(wp.log);
+  const lastDays = writer.lastSavedDays(book.id);
+  const days = writer.recentDays(wp.log, 7);
+  const maxDay = Math.max(goal, ...days.map(d => d.words), 1);
+
+  if (!state.threads || state.threadsBookId !== book.id) {
+    state.threads = await db.listThreads(book.id);
+    state.threadsBookId = book.id;
+  }
+
+  const editorIdx = (state.deskChapter != null && state.deskChapter < book.chapters.length)
+    ? state.deskChapter : Math.max(0, book.chapters.length - 1);
+  state.deskChapter = editorIdx;
+  const ch = book.chapters[editorIdx] || { start: 0, end: content.length, title: '' };
+
+  let html = '';
+  html += `<div class="desk-sec">
+    <div class="desk-h">日更追踪</div>
+    <div class="desk-today">
+      <div class="desk-num"><b>${today}</b><span>今日字数</span></div>
+      <div class="desk-num"><b>${streakN}</b><span>连续打卡(天)</span></div>
+      <div class="desk-num"><b>${lastDays == null ? '—' : (lastDays <= 0 ? '今天' : lastDays + ' 天前')}</b><span>上次保存</span></div>
+    </div>
+    <label class="desk-goal">日更目标 <input id="deskGoal" type="number" min="500" step="500" value="${goal}"> 字 / 天</label>
+    <div class="desk-bars">${days.map(d => `<div class="desk-bar" title="${d.key} · ${d.words} 字"><i style="height:${Math.round(Math.max(2, d.words / maxDay * 40))}px"></i><span>${d.label}</span></div>`).join('')}</div>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">存稿进度</div>
+    <div class="desk-grid">
+      <div>全书 <b>${(st.total / 10000).toFixed(2)} 万</b> 字</div>
+      <div>章节 <b>${st.count}</b> 章</div>
+      <div>平均章长 <b>${st.avg}</b> 字</div>
+      <div>按日更 ${st.goal} 字 · 约 <b>${st.daysLeft} 天</b></div>
+    </div>
+    <div class="desk-tip">${st.short ? `偏短章节 ${st.short} 章` : '无过短章节'} · ${st.long ? `偏长章节 ${st.long} 章` : '无过长章节'}</div>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">续写本章 ${isDraft ? '<span class="desk-tag">我的稿</span>' : ''}</div>
+    <select id="deskChapter" class="desk-sel">${book.chapters.map((c, i) => `<option value="${i}"${i === editorIdx ? ' selected' : ''}>${escapeHtml(c.title || ('第' + (i + 1) + '章'))} · ${st.chapters[i] ? st.chapters[i].chars : 0} 字</option>`).join('')}</select>
+    <textarea id="deskEditor" class="desk-editor" spellcheck="false">${escapeHtml(content.slice(ch.start, ch.end))}</textarea>
+    <div class="desk-acts">
+      <button class="mini-btn" data-act="save-chapter">保存本章</button>
+      <span id="deskSavedTip" class="desk-tip"></span>
+    </div>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">伏笔台账 <button class="mini-btn" data-act="scan-threads">扫描全书</button></div>
+    <div class="desk-tip">从正文挑出"像伏笔"的句子（疑似，需要你判断）。登记后，到了预计回收章仍未回收会标红。</div>
+    <div id="deskThreads">${deskThreadsHTML(state.threads, book)}</div>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">人物一致性 <button class="mini-btn" data-act="scan-consistency">扫描</button></div>
+    <div id="deskConsistency">${state.consistencyHTML || '<div class="desk-tip">扫描后给出：人物断档、年龄/数值冲突、称谓对照。</div>'}</div>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">审稿处方</div>
+    <div class="desk-tip">不新增分数。诊断旁边直接给"可以插入的动作"，点一下复制。</div>
+    ${writer.prescribeList().map(p => `<details class="desk-presc"><summary>${escapeHtml(p.title)}</summary>${p.items.map(it => `<div class="desk-item"><div>${escapeHtml(it.do)}</div><code data-copy="${escapeHtml(it.eg)}">${escapeHtml(it.eg)}</code></div>`).join('')}</details>`).join('')}
+    <details class="desk-presc"><summary>章末钩子模板库</summary>${writer.HOOK_LIB.map(h => `<div class="desk-item"><div class="desk-k">${escapeHtml(h.kind)}</div>${h.items.map(x => `<code data-copy="${escapeHtml(x)}">${escapeHtml(x)}</code>`).join('')}</div>`).join('')}</details>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">过审自查 <button class="mini-btn" data-act="scan-guard">扫描全书</button></div>
+    <div class="desk-tip">平台常见红线自查（本地词表，仅供参考，不作为合规依据）。留空用内置词表，也可粘贴某平台的自审词库。</div>
+    <textarea id="deskGuardWords" class="desk-words" placeholder="自定义词库：逗号或换行分隔（可留空）">${escapeHtml(wp.guardWords || '')}</textarea>
+    <div id="deskGuardOut"></div>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">AI 味检测 <button class="mini-btn" data-act="scan-aif">检测本章</button></div>
+    <div class="desk-tip">查总结腔、对仗模板、陈词滥调、上帝视角、副词堆砌。命中不等于要改，自己判断。</div>
+    <div id="deskAifOut"></div>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">AI 续写（可选）</div>
+    <div class="desk-tip">用你自己的前几章当文风样本，先给分镜、再成文。需要先在设置里接入大模型。</div>
+    <div class="desk-acts">
+      <button class="mini-btn" data-act="ai-storyboard">先给本章分镜</button>
+      <button class="mini-btn" data-act="ai-style">按我的文风续写</button>
+    </div>
+    <div id="deskAiOut"></div>
+  </div>`;
+
+  html += `<div class="desk-sec">
+    <div class="desk-h">导出</div>
+    <div class="desk-acts">
+      <button class="mini-btn" data-act="export-plain">纯文本（通用）</button>
+      <button class="mini-btn" data-act="export-md">Markdown</button>
+      <button class="mini-btn" data-act="export-body">仅正文（无标题）</button>
+    </div>
+    <div class="desk-tip">纯文本可直接粘贴到起点 / 番茄作家助手的「新建章节」里。</div>
+  </div>`;
+
+  body.innerHTML = `<div class="desk">${html}</div>`;
+}
+
+function deskThreadsHTML(threads, book) {
+  if (!threads || !threads.length) return '<div class="desk-tip">还没有登记伏笔。点「扫描全书」把候选找出来。</div>';
+  const lastCh = (book.chapters ? book.chapters.length : 1) - 1;
+  return '<div class="thread-list">' + threads.map(t => {
+    const overdue = !t.recovered && t.expectChapter != null && t.expectChapter <= lastCh;
+    return `<div class="thread-item${overdue ? ' overdue' : ''}${t.recovered ? ' done' : ''}">
+      <div class="thread-text" data-off="${t.offset}">${escapeHtml(t.text)}</div>
+      <div class="thread-meta">第 ${(t.chapter || 0) + 1} 章${t.cues && t.cues.length ? ' · 线索：' + escapeHtml(t.cues.join('/')) : ''}${overdue ? ' · <b class="warn">疑似未回收</b>' : (t.recovered ? ' · 已回收' : '')}</div>
+      <div class="thread-acts">
+        <button class="mini-btn" data-act="thread-jump" data-off="${t.offset}">回原文</button>
+        <label class="thread-expl">预计回收 <input class="thread-exp" type="number" min="1" data-id="${t.id}" value="${t.expectChapter != null ? t.expectChapter + 1 : ''}"> 章</label>
+        <button class="mini-btn" data-act="thread-toggle" data-id="${t.id}">${t.recovered ? '取消回收' : '标记回收'}</button>
+        <button class="mini-btn danger" data-act="thread-del" data-id="${t.id}">删除</button>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+}
+
+function refreshDeskThreads() {
+  const box = $('#deskThreads');
+  if (box) box.innerHTML = deskThreadsHTML(state.threads, state.book);
+}
+
+async function onDeskClick(e) {
+  const t = e.target;
+  const copyEl = t.closest('[data-copy]');
+  if (copyEl) { await copyText(copyEl.dataset.copy); toast('已复制'); return; }
+  const offEl = t.closest('[data-off]');
+  if (offEl && !offEl.dataset.act) { gotoOffset(+offEl.dataset.off); return; }
+  const btn = t.closest('[data-act]');
+  if (!btn || !state.book) return;
+  const act = btn.dataset.act;
+
+  if (act === 'save-chapter') {
+    const idx = state.deskChapter ?? (state.book.chapters.length - 1);
+    const c = state.book.chapters[idx];
+    if (!c) return;
+    const nv = $('#deskEditor').value;
+    const oldLen = writer.charCount(state.content.slice(c.start, c.end));
+    const newLen = writer.charCount(nv);
+    state.content = state.content.slice(0, c.start) + nv + state.content.slice(c.end);
+    await db.putText(state.book.id, state.content);
+    state.book.chapters = splitChapters(state.content);
+    state.book.charCount = state.content.length;
+    await db.putBook(state.book);
+    writer.markSaved(state.book.id);
+    const d = Math.max(0, newLen - oldLen);
+    if (d) writer.logWords(d);
+    toast('已保存' + (d ? `（+${d} 字）` : ''));
+    await loadBooks();
+    await renderDesk();
+    return;
+  }
+
+  if (act === 'scan-threads') {
+    const cands = writer.extractThreads(state.book, state.content);
+    const existing = new Set((state.threads || []).map(x => x.text));
+    let added = 0;
+    for (const c of cands) {
+      if (existing.has(c.text) || added >= 200) continue;
+      await db.putThread({ id: db.uid(), bookId: state.book.id, text: c.text, offset: c.offset, chapter: c.chapter, cues: c.cues, recovered: false, expectChapter: null, createdAt: Date.now() });
+      existing.add(c.text); added++;
+    }
+    state.threads = await db.listThreads(state.book.id);
+    refreshDeskThreads();
+    toast(added ? `新增 ${added} 条伏笔候选` : '没有新的候选');
+    return;
+  }
+
+  if (act === 'thread-jump') { gotoOffset(+btn.dataset.off); return; }
+  if (act === 'thread-del') {
+    await db.deleteThread(btn.dataset.id);
+    state.threads = state.threads.filter(x => x.id !== btn.dataset.id);
+    refreshDeskThreads(); return;
+  }
+  if (act === 'thread-toggle') {
+    const th = (state.threads || []).find(x => x.id === btn.dataset.id);
+    if (th) { th.recovered = !th.recovered; await db.putThread(th); refreshDeskThreads(); }
+    return;
+  }
+
+  if (act === 'scan-consistency') {
+    let names = [];
+    try { names = ai.detectNames(state.content, state.book) || []; } catch { names = []; }
+    const r = writer.consistencyScan(state.book, state.content, names);
+    let h = '';
+    if (!names.length) h += '<div class="desk-tip">没识别到人名（规则靠姓氏 + 标题 +「某某道」，冷门名会漏）。</div>';
+    if (r.gaps.length) h += '<div class="desk-sub">人物断档（≥3 章未出现）</div>' + r.gaps.map(g => `<div class="desk-hit">${escapeHtml(g.name)} · 第 ${g.from + 1} 章后断了 ${g.gap} 章</div>`).join('');
+    if (r.numbers.length) h += '<div class="desk-sub">年龄 / 数值疑似冲突</div>' + r.numbers.map(n => `<div class="desk-hit">${escapeHtml(n.name)} · 出现 ${escapeHtml(n.values.join(' / '))} 岁</div>`).join('');
+    if (r.aliases.length) h += '<div class="desk-sub">称谓对照</div>' + r.aliases.map(a => `<div class="desk-hit">${a.variants.map(v => escapeHtml(v.form) + '×' + v.n).join(' · ')}<br><span class="dim">出场第 ${a.first + 1}–${a.last + 1} 章</span></div>`).join('');
+    if (!r.gaps.length && !r.numbers.length) h += '<div class="desk-tip">未发现明显断档或数值冲突。</div>';
+    state.consistencyHTML = h;
+    $('#deskConsistency').innerHTML = h;
+    return;
+  }
+
+  if (act === 'scan-guard') {
+    const words = ($('#deskGuardWords') ? $('#deskGuardWords').value : '').split(/[\s,，、;；|]+/).map(s => s.trim()).filter(Boolean);
+    const hits = writer.scanGuard(state.content, words);
+    const out = $('#deskGuardOut');
+    out.innerHTML = hits.length
+      ? '<div class="desk-tip">命中 ' + hits.length + ' 处（点击可回原文）：</div>' + hits.slice(0, 80).map(h => `<div class="desk-hit" data-off="${h.offset}"><b>${escapeHtml(h.word)}</b> … ${escapeHtml(h.ctx)}…</div>`).join('')
+      : '<div class="desk-tip">未命中词表内的词。</div>';
+    return;
+  }
+
+  if (act === 'scan-aif') {
+    const idx = state.deskChapter ?? (state.book.chapters.length - 1);
+    const c = state.book.chapters[idx] || { start: 0, end: state.content.length };
+    const hits = writer.scanAIFlavor(state.content.slice(c.start, c.end));
+    $('#deskAifOut').innerHTML = hits.length
+      ? '<div class="desk-tip">命中 ' + hits.length + ' 处：</div>' + hits.slice(0, 60).map(h => `<div class="desk-hit"><b>${escapeHtml(h.type)}</b> · ${escapeHtml(h.hit)}</div>`).join('')
+      : '<div class="desk-tip">本章没查出明显的 AI 腔。</div>';
+    return;
+  }
+
+  if (act === 'ai-storyboard' || act === 'ai-style') {
+    if (!ai.aiReady()) { toast('先在设置里接入大模型'); return; }
+    const out = $('#deskAiOut');
+    out.innerHTML = '<div class="desk-tip">生成中…</div>';
+    const b = state.book, cs = b.chapters;
+    const idx = state.deskChapter ?? (cs.length - 1);
+    const samples = cs.slice(0, Math.min(3, cs.length)).map(c => state.content.slice(c.start, c.end)).join('\n\n').slice(0, 4000);
+    const prevStart = cs[Math.max(0, idx - 1)] ? cs[Math.max(0, idx - 1)].start : 0;
+    const prevEnd = cs[idx] ? cs[idx].start : state.content.length;
+    const ctx = state.content.slice(prevStart, prevEnd).slice(-2000) || state.content.slice(0, 2000);
+    const ask = act === 'ai-storyboard' ? ('本章《' + ((cs[idx] && cs[idx].title) || '') + '》接下来怎么写') : '顺着本章继续往下写约 800 字，结尾留一个钩子';
+    const msgs = act === 'ai-storyboard' ? writer.promptStoryboard(ctx, ask) : writer.promptStyleLock(samples, ask);
+    let acc = '';
+    try {
+      await ai.askAI(msgs, { maxTokens: 1200, onDelta: (d) => { acc += d; out.innerHTML = '<div class="desk-ai">' + ai.mdToHtml(acc) + '</div>'; } });
+      out.innerHTML = '<div class="desk-ai">' + ai.mdToHtml(acc) + '</div>';
+    } catch (err) {
+      out.innerHTML = '<div class="desk-tip" style="color:var(--accent)">失败：' + escapeHtml(err.message) + '</div>';
+    }
+    return;
+  }
+
+  if (act === 'export-plain' || act === 'export-md' || act === 'export-body') {
+    const name = (state.book.title || '未命名').replace(/[\\/:*?"<>|]/g, '_');
+    if (act === 'export-body') await deliverText(name + '-正文.txt', writer.exportPlain(state.book, state.content, { titles: false, blank: true }), 'text/plain');
+    else if (act === 'export-md') await deliverText(name + '.md', writer.exportPlain(state.book, state.content, { titles: true, blank: true }), 'text/markdown');
+    else await deliverText(name + '.txt', writer.exportPlain(state.book, state.content, { titles: true, blank: true }), 'text/plain');
+    return;
+  }
+}
+
+function onDeskChange(e) {
+  const t = e.target;
+  if (t.id === 'deskChapter') { state.deskChapter = +t.value; renderDesk(); return; }
+  if (t.id === 'deskGoal') {
+    const p = writer.getWriterPrefs();
+    p.goal = Math.max(100, +t.value || 3000);
+    writer.setWriterPrefs(p);
+    renderDesk();
+    return;
+  }
+  if (t.classList && t.classList.contains('thread-exp')) {
+    const th = (state.threads || []).find(x => x.id === t.dataset.id);
+    const v = t.value.trim();
+    if (th) { th.expectChapter = v === '' ? null : (Math.max(1, +v) - 1); db.putThread(th).then(refreshDeskThreads); }
+    return;
+  }
+}
+
+function onDeskInput(e) {
+  const t = e.target;
+  if (t.id === 'deskGuardWords') {
+    const p = writer.getWriterPrefs(); p.guardWords = t.value; writer.setWriterPrefs(p); return;
+  }
+  if (t.id === 'deskEditor') {
+    const tip = $('#deskSavedTip');
+    if (tip) tip.textContent = '未保存 · 本章 ' + writer.charCount(t.value) + ' 字';
+    return;
+  }
+}
+
+$('#tab-desk').addEventListener('click', onDeskClick);
+$('#tab-desk').addEventListener('change', onDeskChange);
+$('#tab-desk').addEventListener('input', onDeskInput);
 
 /* ══════════════════════ 助手 ══════════════════════ */
 function renderChat() {
