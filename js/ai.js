@@ -462,6 +462,72 @@ export function mdToHtml(md) {
 export const TAG_COLORS = { portrait: 'yellow', scene: 'blue', action: 'green', mood: 'pink', dialog: 'purple' };
 export const TAG_NAMES = { portrait: '人物', scene: '环境', action: '动作', mood: '神态心理', dialog: '对话衔接' };
 
+/** 按人物名稳定分配高亮色（同人同色；超过 5 人循环复用）。 */
+export function personColor(name) {
+  const pal = ['yellow', 'green', 'blue', 'pink', 'purple'];
+  let h = 0;
+  for (const c of String(name || '')) h = (h * 31 + c.charCodeAt(0)) % 9973;
+  return pal[h % pal.length];
+}
+
+/** 人物别名合并：长名优先，被更长名包含的短名并入（如“宝玉”→“贾宝玉”）。 */
+export function mergePersonNames(names) {
+  const arr = [...new Set((names || []).filter(Boolean))].sort((a, b) => b.length - a.length);
+  const out = [];
+  for (const n of arr) { if (!out.some(m => m.includes(n))) out.push(n); }
+  return out;
+}
+
+/** 把某个称呼归一到合并后的规范名。 */
+export function canonicalName(name, merged) {
+  if (!name) return name;
+  for (const m of merged || []) { if (m === name || m.includes(name) || name.includes(m)) return m; }
+  return name;
+}
+
+/** AI 版“情节概括”：本章讲了啥 + 与前后章关系 + 爽点/驱动点 */
+export function promptPlotSummary(book, chapter, prevTitle, nextTitle, text) {
+  return [
+    { role: 'system', content: SYS + '\n7. 你现在是网文剧情编辑，专门给作者做“每章情节概括”，重点是剧情推进与读者动力，不要文学赏析、不要评价文笔。' },
+    {
+      role: 'user', content: `我在读${bookMeta(book)}
+当前章节：${chapter.title}
+${prevTitle ? `上一章：${prevTitle}` : '（这是第一章）'}
+${nextTitle ? `下一章：${nextTitle}` : '（这是最后一章）'}
+
+【本章原文】
+${text.slice(0, 11000)}
+
+请给这一章做一份“情节概括”，严格按下面标题输出 Markdown，不要输出标题以外的内容：
+
+### 本章讲了啥
+3–5 句，按时间顺序讲清：谁、做了什么、结果如何。只写事实，不评价。
+
+### 与前后章的关系
+- 承上：这一章承接上一章的什么（伏笔 / 冲突 / 目标）
+- 启下：这一章为下一章和后续埋了什么（悬念 / 转折 / 升级）
+（若是第一章或最后一章，相应写“开篇 / 收尾”。）
+
+### 爽点 / 驱动读者读的点
+- 角色线：本章围绕谁展开，他的状态或目标发生了什么变化
+- 爽点：本章给了什么情绪释放（打脸 / 获得 / 揭秘 / 情感确认…），没有就写“无”
+- 钩子：章末用什么让人想看下一章
+- 节奏：本章偏推进 / 偏爽点 / 偏过渡，一句话说理由
+
+每项不超过 40 字，宁可简短，不要凑字。` }
+  ];
+}
+
+/** 本地兜底：未接入模型时的情节概括（只有本章数据） */
+export function localPlotSummary(book, ch, text) {
+  const wc = text.replace(/\s+/g, '').length;
+  let names = [];
+  try { names = detectNames(text, book) || []; } catch (e) { names = []; }
+  return `<h3>本章讲了啥</h3><p>（本地模式：未接入模型，无法生成情节概括。）</p>
+  <h3>本章数据</h3><p>约 ${wc} 字；主要出现人物：${names.slice(0, 6).map(escapeHtml).join('、') || '未识别'}。</p>
+  <p style="color:var(--ink-3);font-size:12px">在「设置」配置 AI 后，可生成含“与前后章关系 / 爽点驱动点”的完整情节概括。</p>`;
+}
+
 /** AI 版一键标记：让模型按“这段主要写的是谁”挑句归类（只出 JSON，不改正文） */
 export function promptAutoTag(book, chapter, text) {
   return [
@@ -476,7 +542,7 @@ ${text.slice(0, 11000)}
 请从这一章里挑出**最值得借鉴写作手法**的句子（必须是原文原句，不要改写），并**按“这段主要描写的是哪个人物”归类**：
 - 无论它写的是情绪、动作、神态、外貌还是情节推进，都归到它**主要描写的那个人物**名下；
 - 同一个人物最多 4 句；本书其它人物每人也最多 3 句；
-- 若某句没有明确人物（纯环境 / 群像 / 无主语叙述），person 一律填“其他”；宁缺毋滥，不要凑数。
+- 若某句没有明确人物（纯环境 / 群像 / 无主语叙述），**不要选进来**；宁缺毋滥，不要凑数。
 
 **只输出一个 JSON 数组，不要任何解释，不要 Markdown 代码块**，例如：
 [{"person":"人物名","quote":"原文句子…"},{"person":"另一个人物","quote":"…"}]
@@ -498,7 +564,8 @@ export function parseAutoTag(reply) {
   const out = [];
   for (const it of arr) {
     if (!it || typeof it.quote !== 'string') continue;
-    const person = String(it.person || '').trim() || '其他';
+    const person = String(it.person || '').trim();
+    if (!person || person === '其他') continue;
     const quote = it.quote.trim();
     if (quote.length < 4) continue;
     out.push({ person, color: personColor(person), quote });
@@ -544,29 +611,37 @@ function splitSentences(text) {
   return out;
 }
 
-export function autoTagChapter(text) {
+/**
+ * 纯本地规则：按“这段主要写的是哪个人物”归类（人物为主，别名已合并）。
+ * names：全书人物名（按戏份降序），来自 detectNames。
+ * 返回 [{ start, end, person, color, text }]；没有明确人物的句子不标记。
+ * 注意：启发式信号，会漏会误报（与项目其它本地规则一致）。
+ */
+export function autoTagChapter(text, names) {
   const out = [];
   if (!text) return out;
+  // 合并别名：短名并入包含它的最长名（如“宝玉”→“贾宝玉”）；匹配时承认所有别名
+  const raw = [...new Set((names || []).filter(Boolean))].sort((a, b) => b.length - a.length);
+  const canon = [];
+  const aliasTo = {};
+  for (const n of raw) {
+    const c = canon.find(m => m.includes(n)) || n;
+    if (!canon.includes(c)) canon.push(c);
+    aliasTo[n] = c;
+  }
+  const aliases = Object.keys(aliasTo).sort((a, b) => b.length - a.length);
   const sents = splitSentences(text);
-  const counts = { portrait: 0, scene: 0, action: 0, mood: 0, dialog: 0 };
-  const keys = Object.keys(TAG_WORDS);
+  const counts = {};
+  const MAXP = 4;
   for (const s of sents) {
     const t = s.text;
-    const hasQuote = /[“”"「」]/.test(t);
-    let best = null, bestScore = 0;
-    for (const k of keys) {
-      let score = 0;
-      for (const w of TAG_WORDS[k]) if (t.includes(w)) score += (w.length >= 2 ? 2 : 1);
-      if (k === 'dialog') {
-        if (hasQuote) score += 1;
-        for (const w of TAG_LINK) if (t.includes(w)) score += 2;
-      }
-      if (score > bestScore) { bestScore = score; best = k; }
-    }
-    if (best && bestScore >= 2 && counts[best] < TAG_MAX[best]) {
-      counts[best]++;
-      out.push({ start: s.start, end: s.end, kind: best, color: TAG_COLORS[best], text: t.trim() });
-    }
+    let person = null;
+    for (const a of aliases) { if (a && t.includes(a)) { person = aliasTo[a]; break; } }
+    if (!person) continue;            // 没有明确人物：不标记
+    counts[person] = counts[person] || 0;
+    if (counts[person] >= MAXP) continue;
+    counts[person]++;
+    out.push({ start: s.start, end: s.end, person, color: personColor(person), text: t.trim() });
   }
   out.sort((a, b) => a.start - b.start);
   return out;

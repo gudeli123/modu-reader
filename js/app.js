@@ -281,6 +281,7 @@ async function openBook(id, opts = {}) {
   state.consistencyHTML = '';
   state.threads = null;
   state.threadsBookId = null;
+  state._names = null;   // 换书时清空人物名缓存
   state.notes = state.notes || [];
 
   $('#welcome').hidden = true;
@@ -495,10 +496,20 @@ function toggleInline() {
 }
 
 /* ══════════ 一键标记本章（按人物归类） ══════════ */
+// 全书人物名（合并别名，缓存一次）：用于把 AI 给出的称呼归一到规范名
+function bookNames() {
+  if (state._names) return state._names;
+  let n = [];
+  try { n = ai.mergePersonNames(ai.detectNames(state.content, state.book)); } catch (e) { n = []; }
+  state._names = n;
+  return n;
+}
+
 // 落成标记；chapterIndex 指定所属章；person=主要人物，color 按人物分配
 async function applyChapterTags(chapterIndex, ch, items, opts = {}) {
   const ranges = state.marks.map(m => ({ s: m.start, e: m.end }));
   const overlap = (s, e) => ranges.some(r => s < r.e && r.s < e);
+  const merged = bookNames();
   let added = 0;
   for (const it of items) {
     let s = -1, e = -1;
@@ -510,7 +521,7 @@ async function applyChapterTags(chapterIndex, ch, items, opts = {}) {
     }
     if (s < 0 || e <= s) continue;
     if (overlap(s, e)) continue;
-    const person = it.person || '';
+    const person = it.person ? ai.canonicalName(it.person, merged) : '';
     const m = {
       id: db.uid(), bookId: state.book.id, chapterIndex,
       start: s, end: e, text: state.content.slice(s, e),
@@ -664,6 +675,28 @@ function renderPersonBar() {
     return `<button data-f="${f}" class="${cur === f ? 'on' : ''}">${escapeHtml(p)}</button>`;
   }).join('');
 }
+
+/* ── 点人物标签：跳到该人物第一处标记，并闪烁正文里该人物的句子 ── */
+function flashPersonMarks(name) {
+  document.querySelectorAll('#reader mark.hl').forEach(el => {
+    const m = state.marks.find(x => x.id === el.dataset.id);
+    if (m && m.person === name) {
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 1300);
+    }
+  });
+}
+function focusPersonMarks(name) {
+  const list = state.marks.filter(m => m.person === name).sort((a, b) => a.start - b.start);
+  if (!list.length) return;
+  const { index } = chapterAt(list[0].start);
+  if (index !== state.chapter) renderReader(index, { offset: list[0].start });
+  else scrollToOffset(list[0].start);
+  setTimeout(() => flashPersonMarks(name), 260);
+}
+
+/* ── 情节概括入口（每章：讲了啥 + 与前后章关系 + 爽点/驱动点） ── */
+$('#btnChapterSummary')?.addEventListener('click', () => { if (state.book) showOutline('summary'); });
 
 let inlineTip = null;
 function showInlineTip(el) {
@@ -2225,6 +2258,7 @@ $('#noteFilter').addEventListener('click', (e) => {
   state.noteFilter = b.dataset.f;
   $$('#noteFilter button').forEach(x => x.classList.toggle('on', x === b));
   renderNotes();
+  if (b.dataset.f && b.dataset.f.startsWith('person:')) focusPersonMarks(decodeURIComponent(b.dataset.f.slice(7)));
 });
 
 $('#notesList').addEventListener('click', async (e) => {
@@ -2352,12 +2386,15 @@ async function showOutline(type, question, force = false) {
   if (!state.book) return;
   const isChapter = type === 'chapter';
   const isWriting = type === 'writing';
+  const isSummary = type === 'summary';
   const ch = state.book.chapters[state.chapter];
   const title = isChapter
     ? `本章脉络 · ${cleanTitle(ch.title)}`
-    : isWriting
-      ? (state.book.kind === 'draft' ? `稿件体检 · ${state.book.title}` : `写作借鉴 · ${state.book.title}`)
-      : `拆书 · ${state.book.title}`;
+    : isSummary
+      ? `情节概括 · ${cleanTitle(ch.title)}`
+      : isWriting
+        ? (state.book.kind === 'draft' ? `稿件体检 · ${state.book.title}` : `写作借鉴 · ${state.book.title}`)
+        : `拆书 · ${state.book.title}`;
 
   $('#outlineMask').hidden = false;
   $('#outlineTitle').textContent = title;
@@ -2367,7 +2404,7 @@ async function showOutline(type, question, force = false) {
   const btnCopy = $('#btnOutlineCopy'), btnSave = $('#btnOutlineSave');
 
   // 命中缓存：不重复调用模型，也不重复花钱（先内存，再 IndexedDB）
-  const cacheKey = `${state.book.id}|${type}|${isChapter ? state.chapter : 0}`;
+  const cacheKey = `${state.book.id}|${type}|${(isChapter || isSummary) ? state.chapter : 0}`;
   let cached = outlineCache.get(cacheKey);
   if (!cached && !force && state.book.kind !== 'draft') {
     cached = await db.getKV('outline.' + cacheKey);
@@ -2492,6 +2529,42 @@ async function showOutline(type, question, force = false) {
       body.innerHTML = `<p style="color:var(--accent)">${escapeHtml(aiExplainError(err))}</p>
         <p style="font-size:11.5px;color:var(--ink-3)">下面是本地生成的章节统计，可先用着。</p>` +
         ai.localChapterOutline(state.book, ch, text) + card;
+      $('#outlineHint').innerHTML = '<span class="regen-link" id="regenBtn">生成失败 · 点此重试</span>';
+    }
+    finish();
+    return;
+  }
+
+  if (isSummary) {
+    const text = state.content.slice(ch.start, ch.end);
+    const prev = state.chapter > 0 ? state.book.chapters[state.chapter - 1] : null;
+    const next = state.chapter < state.book.chapters.length - 1 ? state.book.chapters[state.chapter + 1] : null;
+    if (!ai.aiReady()) {
+      body.innerHTML = ai.localPlotSummary(state.book, ch, text);
+      finish();
+      return;
+    }
+    body.innerHTML = `<p class="outline-loading">正在读这一章，做情节概括…</p>`;
+    try {
+      let acc = '';
+      const msgs = ai.promptPlotSummary(
+        state.book, { title: cleanTitle(ch.title) },
+        prev ? cleanTitle(prev.title) : '', next ? cleanTitle(next.title) : '', text);
+      await ai.askAI(msgs, {
+        maxTokens: 2000,
+        onDelta: (d) => {
+          acc += d;
+          body.innerHTML = ai.mdToHtml(acc);
+          body.scrollTop = body.scrollHeight;
+        }
+      });
+      state.outline.md = acc;
+      body.innerHTML = ai.mdToHtml(acc);
+      if (ai.wasTruncated()) setupContinue(body, msgs, { value: acc }, 2000);
+    } catch (err) {
+      failed = true;
+      body.innerHTML = `<p style="color:var(--accent)">${escapeHtml(aiExplainError(err))}</p>` +
+        ai.localPlotSummary(state.book, ch, text);
       $('#outlineHint').innerHTML = '<span class="regen-link" id="regenBtn">生成失败 · 点此重试</span>';
     }
     finish();
