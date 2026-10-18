@@ -2853,7 +2853,8 @@ export function openingHTML(book, content) {
   return `<h3 id="secOpen">黄金三章</h3>
   <p class="ch-hint">读者在前三章决定走不走。这里只查几件事：人有没有出现、有没有人说话、有没有人挡路、有没有停下来讲设定、章末有没有钩子。留不住人，还可以靠一个强印象。</p>
   <div class="op-cards">${cards}</div>
-  <ul class="op-issues">${list}</ul>`;
+  <ul class="op-issues">${list}</ul>
+  ${openingExtraHTML(book, content)}`;
 }
 
 const EMO_DEF = [
@@ -2929,7 +2930,8 @@ export function emotionHTML(book, content) {
   <div class="ch-sub">给予 vs 展示</div>
   <p class="ch-hint">${gvText}</p>
 
-  ${paceBody(book, content)}`;
+  ${paceBody(book, content)}
+  ${emotionExtraHTML(book, content)}`;
 }
 
 const EMO_N = /愤怒|委屈|紧张|害怕|恐惧|悲伤|难过|高兴|激动|惊讶|震惊|焦虑|绝望|兴奋|嫉妒|悔恨|羞愧|不安|痛苦|愤怒/g;
@@ -3518,7 +3520,8 @@ export function characterHTML(book, content) {
       <button class="mini-btn" data-chars>用模型拆选中的</button>
       <span>只发选中的人在书里的片段，最多四人</span>
     </div>
-  </div>`;
+  </div>
+  ${castExtraHTML(book, content, d)}`;
 }
 
 export function pickCast(book, content, n = 3) {
@@ -3630,4 +3633,421 @@ export function craftFold(book, content) {
     </div>
     <p class="craft-read">${craftRead(craft)}</p>
   </details>`;
+}
+
+/* ══════════════════════ 进阶体检（书名 / 简介 / 金手指 / 伏笔 / 崩尾 / 造梗） ══════════════════════
+ * 纯本地规则，不调用模型；只给信号与可操作建议，不打分。
+ * 对应《网文拆书直播课·精华要点笔记》建议 1–6 的落地实现。
+ */
+
+const WB_NAME_TROPE = /重生|穿越|穿书|系统|签到|无敌|最强|战神|龙王|赘婿|弃女|弃妇|王妃|太子妃|总裁|豪门|娱乐圈|影帝|影后|修仙|玄幻|末世|副本|诸天|万界|洪荒|开局|全球|全民|我在|我的|嫁给|万人迷|病娇|马甲|退婚|摆烂|躺平|暴富|种田|年代|都市|诡异|规则怪谈|反派|炮灰|宗门|御兽|召唤|神豪|大佬|首富|鉴宝|荒野|直播|无限|进化|降临|序列|怪谈|神话|西游|封神/g;
+
+function wbNameCheck(title, books) {
+  const t = (title || '').trim();
+  const pure = t.replace(/[《》\s·・,，。.!！?？:：\-—()（）]/g, '');
+  const len = pure.length;
+  const out = [];
+  if (!len) out.push(['还没填书名', '先起一个——榜单上书名是唯一一次免费曝光。']);
+  else if (len <= 2) out.push([`只有 ${len} 个字`, '太短，容易和一大片书撞名，检索时被淹没。加一个题眼。']);
+  else if (len <= 8) out.push([`${len} 个字`, '长度合适，榜单和书架上能一眼看完。']);
+  else out.push([`${len} 个字`, '偏长，手机书城会截断。压到 3–8 字最好记。']);
+
+  const hits = [...new Set(t.match(WB_NAME_TROPE) || [])];
+  if (hits.length >= 3) out.push([`叠了 ${hits.length} 个套路词：${hits.join('、')}`, '套路词自带流量也会互相打架，留一个最强的，其余砍掉。']);
+  else if (hits.length) out.push([`含套路词：${hits.join('、')}`, '套路词有流量，但别只堆词——留一个"钩子"，让人想知道后面怎样。']);
+
+  if (/我在|我成了|我的|开局我/.test(t)) out.push(['用了第一人称', '代入强，适合"我在XX当XX"型，注意别写成流水账。']);
+  if (/退婚|被|遭|复仇|逆袭|打脸|逼|逃|藏|假|骗|颠覆/.test(t)) out.push(['带冲突或悬念', '有"戏"，读者会追问后续，这是好信号。']);
+  else out.push(['看不出冲突或悬念', '书名里塞一件"没解决的事"（被赶出家门 / 假装失忆 / 三年后归来）比纯设定更勾人。']);
+  if (/\d{2,}|三|七|九|十|百|千|万/.test(t)) out.push(['含数字', '数字具体、好记，常用来暗示量级或做成系列。']);
+
+  const dup = (books || []).filter(b => {
+    const bt = (b.title || '').replace(/[《》\s·・,，。.!！?？:：\-—()（）]/g, '');
+    return bt && bt === pure;
+  });
+  if (dup.length) out.push(['和别人重名', `书架里已有 ${dup.length} 本同名书，搜索时会被顶下去。加一个限定词区分。`]);
+
+  const rows = out.map(([h, d]) => `<li><b>${escapeHtml(h)}</b>${escapeHtml(d)}</li>`).join('');
+  return `<ul class="op-issues">${rows}</ul>`;
+}
+
+/* ── 简介体检 ── */
+const WB_INTRO_HOOK = /究竟|到底|原来|没想到|竟|谁想到|谁知|不料|岂料|万万没想到/;
+const WB_INTRO_CONFLICT = /复仇|争夺|陷害|背叛|退婚|逼迫|夺走|抢走|错过|抛弃|误会|杀|灭门|家破|对立/;
+const WB_INTRO_CHEAT = /系统|获得|觉醒|重生|穿越|天赋|异能|金手指|签到|传承|机缘|外挂|契约|血脉|空间/;
+const WB_INTRO_EMOTION = /虐|爽|甜|沙雕|搞笑|热血|燃|腹黑|宠|炸裂|爆笑|惊悚|高能/;
+const WB_INTRO_WANT = /要|想|为了|发誓|决心|立志|务必|一定|誓|非得|力求/;
+const WB_INTRO_BLOCK = /却|但|然而|可是|不能|敌不过|无法|困|阻|拦|敌|难|偏偏|哪里知道/;
+
+export function introCheckHTML(intro) {
+  const s = (intro || '').trim();
+  if (!s) return `<p class="ch-hint">把书的简介贴进来，这里会逐条体检。简介是读者点进来后看到的第一段字。</p>`;
+  const len = s.length;
+  const out = [];
+  if (len < 80) out.push([`只有 ${len} 字`, '太短，信息不够，读者不知道这是本什么书。补到 150–350 字。']);
+  else if (len <= 350) out.push([`${len} 字`, '长度合适，手机上两屏内能看完。']);
+  else if (len <= 500) out.push([`${len} 字`, '略长。把最能勾人的那句提到最前面。']);
+  else out.push([`${len} 字`, '太长了，读者会划走。砍到 350 字以内，只留钩子。']);
+  const heads = [];
+  if (WB_INTRO_HOOK.test(s)) heads.push('悬念'); else out.push(['没有悬念词', '加一句"悬念"（究竟…… / 原来…… / 谁知……），让人想知道答案。']);
+  if (WB_INTRO_CONFLICT.test(s)) heads.push('冲突'); else out.push(['没有冲突', '简介要有人挡路：复仇 / 背叛 / 退婚 / 夺走——随便一个。']);
+  if (WB_INTRO_CHEAT.test(s)) heads.push('金手指');
+  if (WB_INTRO_EMOTION.test(s)) heads.push('情绪标签');
+  if (heads.length >= 2) out.push([`钩子齐全：${heads.join('、')}`, '悬念、冲突、金手指、情绪标签都有了，点进来的转化会高。']);
+  const hasWant = WB_INTRO_WANT.test(s), hasBlock = WB_INTRO_BLOCK.test(s);
+  if (hasWant && hasBlock) out.push(['结构成立', '能读出"谁想要什么、却被什么挡住"，这是简介的骨架。']);
+  else if (hasWant && !hasBlock) out.push(['只写了欲望，没写阻碍', '补一句"但是……"，没有阻碍的欲望不叫故事。']);
+  else if (!hasWant && hasBlock) out.push(['只写了困境，没写欲望', '主角得有一件非要不可的事，读者才愿意跟。']);
+  const proper = (s.match(/《[^》]+》|【[^】]+】/g) || []).length;
+  if (proper >= 4) out.push([`书名号/专有名词 ${proper} 处`, '堆设定会劝退。把名词改成动作或对白。']);
+  if (!/[。！？…]$/.test(s)) out.push(['结尾没有落点', '最后一句最好留一个疑问或没说完的事，别平收。']);
+  const rows = out.map(([h, d]) => `<li><b>${escapeHtml(h)}</b>${escapeHtml(d)}</li>`).join('');
+  return `<ul class="op-issues">${rows}</ul>`;
+}
+
+/* ── 金手指 / 设定台账 ── */
+const WB_SETTING = ['系统', '面板', '签到', '任务', '积分', '商城', '抽奖', '技能', '属性', '等级', '境界', '修为', '灵气', '斗气', '魔核', '异能', '血脉', '血统', '功法', '心法', '丹药', '灵石', '储物', '空间', '契约', '召唤', '御兽', '天赋', '传承', '机缘', '重生', '穿越', '先知', '直播', '聊天群', '群聊', '阵营', '序列', '规则', '怪谈', '副本', '秘境'];
+
+export function settingLedger(book, content) {
+  const chs = book.chapters || [];
+  if (!chs.length) return `<p class="ch-hint">还没有章节数据。</p>`;
+  const scan = chs.slice(0, 160);
+  const texts = scan.map(c => content.slice(c.start, c.end));
+  const rows = [];
+  for (const term of WB_SETTING) {
+    let total = 0; const chHits = [];
+    for (let i = 0; i < texts.length; i++) {
+      const n = texts[i].split(term).length - 1;
+      if (n) { chHits.push(i); total += n; }
+    }
+    if (total) rows.push({ term, total, n: chHits.length, first: chHits[0] });
+  }
+  if (!rows.length) return `<p class="ch-hint">正文里没检出常见的系统 / 修炼 / 异能类设定词。要么这本书不走金手指路线，要么用词不在词表里。</p>`;
+  rows.sort((a, b) => (b.n - a.n) || (b.total - a.total));
+  const thin = rows.filter(r => r.n === 1);
+  const list = rows.slice(0, 14).map(r => {
+    const at = scan[r.first].start;
+    const tag = r.n === 1 ? ' <span style="color:var(--accent)">只提到，没在别的章用过</span>' : (r.n >= 5 ? ' <span class="ch-hint">贯穿使用</span>' : '');
+    return `<li><b>${escapeHtml(r.term)}</b> 首见第 ${r.first + 1} 章 · 出现 ${r.total} 次 / 跨 ${r.n} 章 ${atLink(at)}${tag}</li>`;
+  }).join('');
+  const warn = thin.length
+    ? `<p class="ch-hint">有 ${thin.length} 个设定只在单一章节出现过（${thin.slice(0, 5).map(x => x.term).join('、')}…）。提了却没用，读者记不住，也像在凑设定——要么删掉，要么让它在后面真正发挥作用。</p>`
+    : `<p class="ch-hint">检出的设定大多在多章出现，金手指有在被"使用"。</p>`;
+  return `<ul class="op-issues">${list}</ul>${warn}`;
+}
+
+/* ── 伏笔 - 回收追踪 ── */
+const WB_SUSPECT = /竟然|奇怪|不对劲|隐隐|莫名|似乎|好像|总觉得|不知|难道|为何|怎么回事|秘密|隐情|疑惑|蹊跷|古怪|反常|异样|一丝|一抹|隐约|不小心|无意|偶然|忽然想起|记起/;
+const WB_REVEAL = /原来|竟是|其实|真相|揭晓|谜底|恍然大悟|亏得|多亏|果然|正是|方才明白|这才明白/;
+
+export function foreshadowTrack(book, content) {
+  const chs = book.chapters || [];
+  if (chs.length < 2) return `<p class="ch-hint">章数太少，看不出伏笔与回收。</p>`;
+  const scan = chs.slice(0, 200);
+  const revealCh = new Set();
+  const suspects = [];
+  for (let i = 0; i < scan.length; i++) {
+    const c = scan[i];
+    const t = content.slice(c.start, c.end);
+    if (WB_REVEAL.test(t)) revealCh.add(i);
+    const parts = t.split(/[。！？…\n]/);
+    let pos = 0;
+    for (const p of parts) {
+      const at = c.start + pos;
+      pos += p.length + 1;
+      const s = p.trim();
+      if (s.length >= 6 && s.length <= 40 && WB_SUSPECT.test(s)) {
+        suspects.push({ ch: i, at, text: s });
+        if (suspects.length >= 60) break;
+      }
+    }
+    if (suspects.length >= 60) break;
+  }
+  if (!suspects.length) return `<p class="ch-hint">没有检出明显的"疑点句"。要么伏笔埋得很隐蔽，要么这本书基本直给。</p>`;
+  const open = [];
+  const list = suspects.slice(0, 14).map(su => {
+    let resolved = false;
+    for (let k = su.ch; k <= Math.min(scan.length - 1, su.ch + 3); k++) { if (revealCh.has(k)) { resolved = true; break; } }
+    if (!resolved) open.push(su);
+    return `<li><b>第 ${su.ch + 1} 章</b>${escapeHtml(su.text.slice(0, 22))}… ${atLink(su.at)}${resolved ? ' <span class="ch-hint">后文似有回收</span>' : ' <span style="color:var(--accent)">之后三章内没看到回收</span>'}</li>`;
+  }).join('');
+  const warn = open.length
+    ? `<p class="ch-hint">${open.length} 处疑似"埋了没揭"。回看这些句子：是留着后面反转（可以），还是作者忘了（要处理）？埋而不收的多了，读者会觉得坑。</p>`
+    : `<p class="ch-hint">抽到的疑点句大多在后文有回收信号，伏笔利用率不错。</p>`;
+  return `<ul class="op-issues">${list}</ul>${warn}`;
+}
+
+/* ── 后段 / 崩尾体检 ── */
+export function endingRisk(book, content) {
+  const rows = rhythmOf(book, content);
+  if (rows.length < 6) return `<p class="ch-hint">章数太少，后段体检意义不大。</p>`;
+  const n = rows.length;
+  const cut = Math.max(1, Math.floor(n / 3));
+  const F = rows.slice(0, cut), L = rows.slice(n - cut);
+  const avg = (a, f) => a.length ? a.reduce((s, x) => s + f(x), 0) / a.length : 0;
+  const avgLenF = avg(F, r => r.chars), avgLenL = avg(L, r => r.chars);
+  const turnF = avg(F, r => r.turns > 0 ? 1 : 0), turnL = avg(L, r => r.turns > 0 ? 1 : 0);
+  const peakF = avg(F, r => r.peaks > 0 ? 1 : 0), peakL = avg(L, r => r.peaks > 0 ? 1 : 0);
+  const hookF = avg(F, r => r.hook.score), hookL = avg(L, r => r.hook.score);
+  let run = 0; for (let i = n - 1; i >= 0; i--) { if (rows[i].hook.score <= 1) run++; else break; }
+  const dlt = (a, b) => { const v = b - a; const cls = Math.abs(v) < 0.12 ? '' : (v < 0 ? 'style="color:var(--accent)"' : ''); return `<span ${cls}>${v >= 0 ? '+' : ''}${v.toFixed(2)}</span>`; };
+  const notes = [];
+  if (avgLenL < avgLenF * 0.7) notes.push(`后段平均章长从 ${Math.round(avgLenF)} 字掉到 ${Math.round(avgLenL)} 字，像在赶结尾。收尾也要撑住信息量。`);
+  if (avgLenL > avgLenF * 1.4) notes.push(`后段平均章长涨到 ${Math.round(avgLenL)} 字，可能在注水或堆支线。`);
+  if (turnL < turnF - 0.15) notes.push('后段"有转折章节"的比例下降，收尾变平。');
+  if (peakL < peakF - 0.15) notes.push('后段爽点密度下降，读者到这儿容易弃书。');
+  if (hookL < hookF - 0.3) notes.push(`后段章末钩子明显变弱（${hookF.toFixed(1)} → ${hookL.toFixed(1)}），留不住追更的人。`);
+  if (run >= 3) notes.push(`最后连续 ${run} 章是弱钩收尾，这是典型的"崩尾"信号。`);
+  if (!notes.length) notes.push('前后段的长度、转折、爽点、钩子都比较稳，没有明显的崩尾迹象。');
+  const rw = (name, a, b, fmt) => `<tr><td>${name}</td><td>${fmt(a)}</td><td>${fmt(b)}</td><td>${dlt(a, b)}</td></tr>`;
+  return `
+  <table class="ck-table">
+    <thead><tr><th>指标</th><th>前 ${cut} 章</th><th>后 ${cut} 章</th><th>变化</th></tr></thead>
+    <tbody>
+      ${rw('平均章长', avgLenF, avgLenL, v => Math.round(v) + ' 字')}
+      ${rw('有转折比例', turnF, turnL, v => (v * 100).toFixed(0) + '%')}
+      ${rw('有爽点比例', peakF, peakL, v => (v * 100).toFixed(0) + '%')}
+      ${rw('章末钩子均分', hookF, hookL, v => v.toFixed(2))}
+    </tbody>
+  </table>
+  <ul class="op-issues">${notes.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>`;
+}
+
+/* ── 造梗 / 传播点 ── */
+export function memeHits(book, content) {
+  const counts = new Map(), firstAt = new Map();
+  const re = /[“"]([^”"]{2,24})[”"]/g;
+  let m, guard = 0;
+  while ((m = re.exec(content)) && guard++ < 300000) {
+    const s = m[1].trim().replace(/\s+/g, '');
+    if (s.length < 2) continue;
+    counts.set(s, (counts.get(s) || 0) + 1);
+    if (!firstAt.has(s)) firstAt.set(s, m.index);
+  }
+  const reps = [...counts.entries()].filter(([, c]) => c >= 3).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+  const memeRe = /[^。！？\n]{2,20}(其实就是|，就是|什么叫|这才叫|这世上|与其[^，。]{0,12}不如|还没[^，。]{0,10}就|不是[^，。]{0,10}而是|你以为[^，。]{0,12}其实|从来不是|真正的)[^。！？\n]{0,20}[。！？]/g;
+  const memes = new Map();
+  let mm, g2 = 0;
+  while ((mm = memeRe.exec(content)) && g2++ < 3000) memes.set(mm[0].trim(), true);
+  const memeList = [...memes.keys()].slice(0, 10);
+
+  const li = (text, at, note) => `<li>「${escapeHtml(text)}」${at >= 0 ? ' ' + atLink(at) : ''}${note ? ' <span class="ch-hint">' + escapeHtml(note) + '</span>' : ''}</li>`;
+  const repHtml = reps.length
+    ? `<ul class="op-issues">${reps.map(([s, c]) => li(s, firstAt.get(s), `出现过 ${c} 次`)).join('')}</ul>`
+    : `<p class="ch-hint">没有反复出现 3 次以上的短对白。梗是"重复"出来的，同一句口头禅多来几次才成梗。</p>`;
+  const memeHtml = memeList.length
+    ? `<ul class="op-issues">${memeList.map(s => li(s, content.indexOf(s), '金句候选')).join('')}</ul>`
+    : `<p class="ch-hint">没检出明显的金句句式（"……就是……""与其……不如……"这类）。可以在关键情节后给主角一句"总结性"的短话。</p>`;
+  return `
+  <p class="ch-hint">重复出现 3 次以上的短对白 = 口头禅 / 梗的坯子；越被反复用，越容易被读者接梗传播。</p>
+  <div class="ch-sub">重复短对白</div>
+  ${repHtml}
+  <div class="ch-sub">金句句式</div>
+  ${memeHtml}`;
+}
+
+/* ── 进阶体检面板 ── */
+export function wbcheckHTML(book, content, books) {
+  return `
+  <div class="pl-nav">
+    <a data-wjump="secWBname">书名</a><i>·</i>
+    <a data-wjump="secWBintro">简介</a><i>·</i>
+    <a data-wjump="secWBjin">金手指</a><i>·</i>
+    <a data-wjump="secWBfu">伏笔</a><i>·</i>
+    <a data-wjump="secWBend">后段</a><i>·</i>
+    <a data-wjump="secWBmeme">造梗</a><i>·</i>
+    <a data-wjump="secWBscene">名场面</a><i>·</i>
+    <a data-wjump="secWBmap">换地图</a><i>·</i>
+    <a data-outline="book">返回拆书</a>
+  </div>
+  <p class="ch-hint">六项本地体检：书名 · 简介 · 金手指 / 设定台账 · 伏笔回收 · 后段崩尾 · 造梗传播点。规则算的，不调用模型、不打分，只给能动手改的信号。</p>
+
+  <h3 id="secWBname">① 书名体检</h3>
+  <p class="ch-hint">书名是榜单上唯一一次免费曝光。</p>
+  ${wbNameCheck(book.title, books)}
+
+  <h3 id="secWBintro">② 简介体检</h3>
+  <p class="ch-hint">把简介贴进下面，逐条体检（只存在本机，不上传）。</p>
+  <textarea id="wbIntroInput" rows="5" placeholder="贴入本书简介…" style="width:100%;box-sizing:border-box;font-size:12.5px;line-height:1.6;margin:6px 0"></textarea>
+  <div id="wbIntroOut">${introCheckHTML('')}</div>
+
+  <h3 id="secWBjin">③ 金手指 / 设定台账</h3>
+  ${settingLedger(book, content)}
+
+  <h3 id="secWBfu">④ 伏笔 - 回收追踪</h3>
+  ${foreshadowTrack(book, content)}
+
+  <h3 id="secWBend">⑤ 后段 / 崩尾体检</h3>
+  ${endingRisk(book, content)}
+
+  <h3 id="secWBmeme">⑥ 造梗 / 传播点</h3>
+  ${memeHits(book, content)}
+
+  <h3 id="secWBscene">⑦ 名场面拆解</h3>
+  ${sceneHighlights(book, content)}
+
+  <h3 id="secWBmap">⑧ 换地图衔接</h3>
+  ${mapChanges(book, content)}`;
+}
+
+/* ══════════════════════ 增强模块（建议 7–10 的落地补充） ══════════════════════
+ * 均以纯追加方式并入既有板块尾部，不改动原有判定逻辑。
+ */
+
+/* ── 建议 7：黄金三章 · 逻辑认同 / 开篇技巧归类 / 基调 ── */
+export function openingExtraHTML(book, content) {
+  const chs = book.chapters || [];
+  if (!chs.length) return '';
+  const ch1 = content.slice(chs[0].start, chs[0].end).replace(/^\s*第[^\n]{0,40}\n+/, '');
+  const head = ch1.slice(0, 600);
+  const first = (head.split(/[。！？…]/)[0] || '').trim();
+  const tech = [];
+  if (/被|遭|退婚|抢|夺|打|骂|赶|逼|拦|欺/.test(first)) tech.push('冲突式：第一句就有人挡路');
+  if (/[？]/.test(first) || /难道|究竟|为何|谁想到|谁知/.test(head.slice(0, 200))) tech.push('悬念式：抛一个问题吊着');
+  if (/重生|穿越|醒来|睁开眼|回到|三年前|再次/.test(head.slice(0, 300))) tech.push('反差式：时空 / 身份错位开场');
+  if (/^[“"]|我|咱|老子|本人/.test(first) && first.length <= 22) tech.push('代入式：主角第一/近距离视角开口');
+  if (/系统|面板|签到|叮/.test(head.slice(0, 300))) tech.push('信息差式：金手指先亮出来');
+  if (!tech.length) tech.push('常规叙述式：以场景 / 动作铺开，没有明显的强钩子——前 600 字要给一个"必须往下看"的理由');
+
+  const three = chs.slice(0, 3).map(c => content.slice(c.start, c.end)).join('');
+  const wronged = (three.match(/委屈|被欺|受辱|退婚|欺负|看不起|冤枉|绝境|欺压|窝囊|不甘/g) || []).length;
+  const goal = (three.match(/目标|心愿|发誓|一定要|决心|立志|复仇|翻身|证明/g) || []).length;
+  const warm = (three.match(/温暖|温柔|甜|治愈|相守|陪伴|笑意|阳光/g) || []).length;
+  const dark = (three.match(/血|尸|杀|残酷|黑暗|阴谋|背叛|绝望|阴冷/g) || []).length;
+  const fast = (three.match(/突然|瞬间|猛地|立刻|当即|猛然/g) || []).length;
+  const tone = [];
+  tone.push(warm >= dark ? (warm > dark ? '偏暖' : '中性') : '偏冷 / 暗');
+  tone.push(fast >= 8 ? '节奏偏快（短促转折多）' : fast >= 3 ? '节奏中等' : '节奏偏慢（铺陈多）');
+  const items = tech.map(t => `<li>${escapeHtml(t)}</li>`).join('');
+  const idLine = wronged
+    ? `前 3 章有 <b>${wronged}</b> 处"主角被亏待 / 受挫"的描写${goal ? `、<b>${goal}</b> 处"目标 / 决心"` : '，但"想要什么"还不明确'}——逻辑认同${wronged >= 2 ? '基本建立' : '偏弱'}（读者先觉得"他不该被这样"，才愿意跟他走）。`
+    : `前 3 章几乎没写主角受挫（被亏待 / 受辱 / 损失），读者缺少"替他出气"的理由。开篇给主角一个小委屈，代入感会强很多。`;
+  return `
+  <div class="ch-sub">开篇技巧 · 逻辑认同 · 基调</div>
+  <ul class="op-issues">${items}</ul>
+  <p class="ch-hint">${idLine}</p>
+  <p class="ch-hint">基调：${escapeHtml(tone.join('、'))}。（暖 / 冷、快 / 慢决定读者预期，前三章要稳住，别来回跳。）</p>`;
+}
+
+/* ── 建议 8：情绪四拍 · 爽点层次 / 多元意象 ── */
+export function emotionExtraHTML(book, content) {
+  const rows = plotRows(book, content);
+  const grade = { '小': 0, '中': 0, '大': 0 };
+  const samples = [];
+  for (const r of rows) {
+    if (isMatter(book.chapters[r.i])) continue;
+    const t = content.slice(book.chapters[r.i].start, book.chapters[r.i].end);
+    if (!/打飞|打倒|反杀|翻盘|打脸|一拳|一脚|秒杀|击败|碾压|跪|求饶|认输/.test(t)) continue;
+    const big = /全场|众人|四方|举世|万人|一片死寂|鸦雀无声|倒吸/.test(t);
+    const mid = /打飞|反杀|翻盘|击败|碾压|跪|求饶/.test(t);
+    const g = big ? '大' : (mid ? '中' : '小');
+    grade[g]++;
+    const prev = rows.slice(Math.max(0, r.i - 2), r.i).map(x => content.slice(book.chapters[x.i].start, book.chapters[x.i].end)).join('');
+    const paved = /憋屈|隐忍|忍|受辱|被欺|看不起|不甘|压/.test(prev);
+    if (g !== '小' && samples.length < 3 && !paved) samples.push({ i: r.i, g });
+  }
+  const total = grade['小'] + grade['中'] + grade['大'];
+  const gradeLine = total
+    ? `爽点 ${total} 处：大爽 ${grade['大']} · 中爽 ${grade['中']} · 小爽 ${grade['小']}。大爽太多会麻木，最好"小爽垫节奏、中爽给反馈、大爽留高潮"，层层垫高。`
+    : `没检出明显的"释放 / 打脸"爽点。爽点不等同于打架，也可以是识破、揭穿、得到认可。`;
+
+  const IMAGERY = ['月', '雪', '血', '剑', '刀', '灯', '酒', '花', '风', '雨', '山', '河', '星', '影', '火', '水', '雾', '云', '镜', '铃', '香', '墨', '琴', '棋', '尘', '霜', '烟', '光', '门', '城'];
+  const found = IMAGERY.map(w => ({ w, n: content.split(w).length - 1 })).filter(x => x.n > 0);
+  found.sort((a, b) => b.n - a.n);
+  const top = found.slice(0, 8).map(x => `${x.w}${x.n}`).join(' · ');
+  const variety = found.length;
+  const imgLine = variety >= 12
+    ? `用到 ${variety} 类意象（${top}…），画面比较丰富。`
+    : `只用到 ${variety} 类意象（${top}）。意象太集中，画面会单薄——同一种情绪换不同物件承载（不只"剑"，还有"灯、雪、旧信"）。`;
+
+  const coldLine = samples.length
+    ? `有 ${samples.length} 处中 / 大爽没有铺垫（第 ${samples.map(s => s.i + 1).join('、')} 章），爽得没有落差。`
+    : `中 / 大爽前大多有压抑或隐忍铺垫，落差是对的。`;
+
+  return `
+  <div class="ch-sub">爽点层次 · 意象</div>
+  <p class="ch-hint">${escapeHtml(gradeLine)}</p>
+  <p class="ch-hint">${escapeHtml(imgLine)}</p>
+  <p class="ch-hint">${escapeHtml(coldLine)}</p>`;
+}
+
+/* ── 建议 9：人物 · 支线台账 / 双线信号 / 拖延检测 ── */
+export function castExtraHTML(book, content, d) {
+  const chs = book.chapters || [];
+  const main = new Set((d.rows || []).slice(0, 3).map(r => r.name));
+  const side = (d.rows || []).filter(r => r.chapters.length >= 2 && !main.has(r.name)).slice(0, 8);
+  const sideLine = side.length
+    ? `<ul class="op-issues">${side.map(r => `<li><b>${escapeHtml(r.name)}</b> 出现 ${r.chapters.length} 章（第 ${r.chapters.slice(0, 6).map(x => x + 1).join('、')}${r.chapters.length > 6 ? '…' : ''}）${r.gapLen >= 6 ? ` <span style="color:var(--accent)">最长空档 ${r.gapLen} 章</span>` : ''}</li>`).join('')}</ul>`
+    : `<p class="ch-hint">没有识别出明显的支线角色。</p>`;
+
+  const half = Math.floor(chs.length / 2);
+  const cnt = (from, to) => {
+    const m = new Map();
+    for (let i = from; i < to; i++) {
+      const t = content.slice(chs[i].start, chs[i].end);
+      for (const r of (d.rows || []).slice(0, 6)) if (t.includes(r.name)) m.set(r.name, (m.get(r.name) || 0) + 1);
+    }
+    return [...m.entries()].sort((x, y) => y[1] - x[1]).slice(0, 2).map(x => x[0]);
+  };
+  const a = cnt(0, half), b = cnt(half, chs.length);
+  const twoLine = (a[0] && b[0] && a[0] !== b[0])
+    ? `前半段以「${escapeHtml(a.join('、'))}」为主，后半段换成「${escapeHtml(b.join('、'))}」——像双线 / 双主角结构。要检查两条线是否都有钩子，别让一条线长期掉线。`
+    : `前后半段的主角阵营一致，是单线推进。`;
+
+  const rr = rhythmOf(book, content);
+  let run = 0, runStart = 0, worst = { len: 0, from: 0 };
+  rr.forEach((r, i) => {
+    if (r.turns === 0 && r.peaks === 0) { if (run === 0) runStart = i; run++; if (run > worst.len) worst = { len: run, from: runStart }; }
+    else run = 0;
+  });
+  const dragLine = worst.len >= 2
+    ? `第 ${rr[worst.from].i + 1}–${rr[worst.from + worst.len - 1].i + 1} 章连续 ${worst.len} 章既无转折也无爽点，像在"拖"。这段时间读者最容易弃书。`
+    : `没有连续"无转折也无爽点"的章节，节奏没有断档。`;
+
+  return `
+  <div class="ch-sub">支线台账 · 双线 · 拖延</div>
+  ${sideLine}
+  <p class="ch-hint">${escapeHtml(twoLine)}</p>
+  <p class="ch-hint">${escapeHtml(dragLine)}</p>`;
+}
+
+/* ── 建议 10：名场面拆解 ── */
+export function sceneHighlights(book, content) {
+  const rows = plotRows(book, content);
+  const ranked = rows.filter(r => !isMatter(book.chapters[r.i])).map(r => {
+    const t = content.slice(book.chapters[r.i].start, book.chapters[r.i].end);
+    const intense = (t.match(/震惊|哗然|怒吼|咆哮|爆发|血|杀|爆|轰|崩|碎|死|危机|绝境|跪|吐血/g) || []).length;
+    const score = intense * 1.5 + r.turns * 3 + r.hook.score * 2 + (r.conflict === '强' ? 3 : 0) + (r.out === '赢' ? 1 : 0) + (r.out === '输' ? 1 : 0);
+    return { r, t, score };
+  }).sort((a, b) => b.score - a.score).slice(0, 6);
+  if (!ranked.length) return `<p class="ch-hint">没有识别出明显的高能章节。</p>`;
+  const li = ranked.map(x => {
+    const at = book.chapters[x.r.i].start;
+    const s = (x.t.match(/[^。！？…\n]{4,44}(震惊|哗然|怒吼|咆哮|爆发|轰|崩|跪|吐血|反杀|打脸)[^。！？…\n]{0,20}[。！？…]?/) || [''])[0].trim();
+    return `<li><b>第 ${x.r.i + 1} 章</b>${escapeHtml(s || x.r.hook.type)} ${atLink(at)}<span class="ch-hint">${x.r.turns} 转折 · 冲突${x.r.conflict} · 章末${x.r.hook.type}</span></li>`;
+  }).join('');
+  return `<ul class="op-issues">${li}</ul><p class="ch-hint">按"冲突 + 转折 + 钩子 + 情绪强度"排的名场面候选，点 ↩原文 回看那一章。名场面要能被单独摘出来转述——一句"他当众把 X 打脸"就能讲清。</p>`;
+}
+
+/* ── 建议 10：换地图衔接 ── */
+export function mapChanges(book, content) {
+  const chs = book.chapters || [];
+  const hits = [];
+  let lastPlace = '';
+  for (let i = 0; i < chs.length; i++) {
+    const t = content.slice(chs[i].start, chs[i].end);
+    const ms = t.match(/(离开|来到|抵达|走进|踏进|进入|赶往|回到|穿越到|出了)[^，。！？\n]{0,10}([^\s，。！？\n]{0,6}(城|镇|村|宫|府|山|门|派|界|域|海|林|谷|殿|院|星|岛|国|都|州|宗|楼|塔))/g);
+    if (ms && ms.length) {
+      const ph = ms[ms.length - 1];
+      if (ph !== lastPlace) { hits.push({ i, ph }); lastPlace = ph; }
+    }
+  }
+  if (!hits.length) return `<p class="ch-hint">没有检出明显的"换地图"（离开 / 来到 + 地点）信号。</p>`;
+  const li = hits.slice(0, 12).map(h => {
+    const t = content.slice(chs[h.i].start, chs[h.i].end);
+    const hk = hookOf(t);
+    return `<li><b>第 ${h.i + 1} 章</b>${escapeHtml(h.ph)} ${atLink(chs[h.i].start)}<span class="ch-hint">章末${hk.type}</span></li>`;
+  }).join('');
+  return `<ul class="op-issues">${li}</ul><p class="ch-hint">换地图是读者流失高发点。新地图第一件事要"立刻给一个麻烦或一个好处"，章末最好留钩子；只写"到了某某城，歇了三天"，读者会走。</p>`;
 }
