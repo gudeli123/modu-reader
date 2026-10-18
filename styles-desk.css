@@ -57,6 +57,10 @@
 .desk-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 
 .desk-presc { border-top: 1px dashed var(--line, #e6ddcc); padding: 6px 0; }
+
+/* 人物一致性：称呼模式选择器 */
+.desk-mode { display: flex; gap: 6px; align-items: center; }
+.desk-sel-mini { width: auto; max-width: 128px; padding: 4px 6px; font-size: 11.5px; }
 .desk-presc > summary { cursor: pointer; font-weight: 600; font-size: 12.5px; padding: 2px 0; }
 .desk-item { padding: 6px 0 6px 8px; }
 .desk-item > div { margin-bottom: 4px; }

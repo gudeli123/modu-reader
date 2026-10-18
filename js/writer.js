@@ -137,13 +137,16 @@ export function extractThreads(book, content) {
 /* ═══════════ 人物一致性（断档 / 年龄冲突 / 称谓） ═══════════ */
 function nameEsc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-/** 一个人物的常用称呼集合：规范名 + 省略姓氏的称呼。
- *  三字及以上取「后两字」（如「林黛玉」→「黛玉」）；两个字就用两个字本身。 */
-export function nameForms(name) {
+/** 一个人物的常用称呼集合。
+ *  mode：'both'（默认）= 全名 + 后两字；'full' = 仅全名；'short' = 仅后两字。
+ *  三字及以上才有「后两字」可省（如「林黛玉」→「黛玉」）；两个字没有可省称呼，仍用本身。 */
+export function nameForms(name, mode = 'both') {
   name = String(name || '').trim();
   if (!name) return [];
-  const forms = [name];
-  if (name.length >= 3) forms.push(name.slice(-2));
+  const forms = [];
+  if (mode !== 'short') forms.push(name);
+  if (name.length >= 3 && mode !== 'full') forms.push(name.slice(-2));
+  if (!forms.length) forms.push(name);
   return [...new Set(forms)];
 }
 
@@ -163,22 +166,23 @@ function findNameMatches(text, forms) {
 
 function countOcc(text, s) { let n = 0, i = 0; while ((i = text.indexOf(s, i)) !== -1) { n++; i += s.length; } return n; }
 
-/** 每个称呼形态的出现次数（三字名给出「全名」与「后两字」两种，两字名只有本身）。 */
-export function aliasVariants(name, text) {
-  return nameForms(name)
+/** 每个称呼形态的出现次数（默认三字名给出「全名」与「后两字」，两字名只有本身）。 */
+export function aliasVariants(name, text, mode = 'both') {
+  return nameForms(name, mode)
     .map((form) => ({ form, n: countOcc(text || '', form) }))
     .filter((x) => x.n > 0)
     .sort((a, b) => b.n - a.n || b.form.length - a.form.length);
 }
 
-export function consistencyScan(book, content, names) {
+export function consistencyScan(book, content, names, opts = {}) {
+  const mode = opts.mode || 'both';
   names = (names || []).slice(0, 12);
   const cs = (book && book.chapters) || [];
   const text = content || '';
   const gaps = [], numbers = [], aliases = [];
   for (const nm of names) {
     if (!nm) continue;
-    const forms = nameForms(nm);
+    const forms = nameForms(nm, mode);
     // 断档/出场统计：把同一人物的各称呼（全名与简称）合并计位置
     const ms = findNameMatches(text, forms);
     if (!ms.length) continue;
@@ -189,7 +193,7 @@ export function consistencyScan(book, content, names) {
       const g = uniqCh[i] - uniqCh[i - 1];
       if (g > maxGap) { maxGap = g; gapAt = uniqCh[i - 1]; }
     }
-    aliases.push({ name: nm, count: ms.length, first: uniqCh[0], last: uniqCh[uniqCh.length - 1], maxGap, gapAt, variants: aliasVariants(nm, text) });
+    aliases.push({ name: nm, count: ms.length, first: uniqCh[0], last: uniqCh[uniqCh.length - 1], maxGap, gapAt, variants: aliasVariants(nm, text, mode) });
     if (maxGap >= 3) gaps.push({ name: nm, gap: maxGap, from: gapAt });
 
     // 年龄/数值：任一称呼后接岁数都算（如「黛玉今年十六岁」）

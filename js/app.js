@@ -1154,7 +1154,16 @@ async function renderDesk() {
   </div>`;
 
   html += `<div class="desk-sec">
-    <div class="desk-h">人物一致性 <button class="mini-btn" data-act="scan-consistency">扫描</button></div>
+    <div class="desk-h">人物一致性
+      <span class="desk-mode">
+        <select id="deskNameMode" class="desk-sel desk-sel-mini" title="检查时把哪些称呼算作同一个人">
+          <option value="both"${(state.deskNameMode || 'both') === 'both' ? ' selected' : ''}>全名+简称</option>
+          <option value="full"${state.deskNameMode === 'full' ? ' selected' : ''}>仅全名</option>
+          <option value="short"${state.deskNameMode === 'short' ? ' selected' : ''}>仅后两字</option>
+        </select>
+        <button class="mini-btn" data-act="scan-consistency">扫描</button>
+      </span>
+    </div>
     <div id="deskConsistency">${state.consistencyHTML || '<div class="desk-tip">扫描后给出：人物断档、年龄/数值冲突、称谓对照。</div>'}</div>
   </div>`;
 
@@ -1286,8 +1295,11 @@ async function onDeskClick(e) {
   if (act === 'scan-consistency') {
     let names = [];
     try { names = ai.detectNames(state.content, state.book) || []; } catch { names = []; }
-    const r = writer.consistencyScan(state.book, state.content, names);
+    const mode = ($('#deskNameMode') || {}).value || state.deskNameMode || 'both';
+    state.deskNameMode = mode;
+    const r = writer.consistencyScan(state.book, state.content, names, { mode });
     let h = '';
+    h += '<div class="desk-tip">称呼模式：' + ({ both: '全名 + 后两字简称', full: '只用全名', short: '只用后两字' }[mode] || '全名 + 简称') + '</div>';
     if (!names.length) h += '<div class="desk-tip">没识别到人名（规则靠姓氏 + 标题 +「某某道」，冷门名会漏）。</div>';
     if (r.gaps.length) h += '<div class="desk-sub">人物断档（≥3 章未出现）</div>' + r.gaps.map(g => `<div class="desk-hit">${escapeHtml(g.name)} · 第 ${g.from + 1} 章后断了 ${g.gap} 章</div>`).join('');
     if (r.numbers.length) h += '<div class="desk-sub">年龄 / 数值疑似冲突</div>' + r.numbers.map(n => `<div class="desk-hit">${escapeHtml(n.name)} · 出现 ${escapeHtml(n.values.join(' / '))} 岁</div>`).join('');
@@ -1356,6 +1368,11 @@ async function onDeskClick(e) {
 
 function onDeskChange(e) {
   const t = e.target;
+  if (t.id === 'deskNameMode') {
+    state.deskNameMode = t.value || 'both';
+    if (state.consistencyHTML) { const b = $('#tab-desk [data-act="scan-consistency"]'); if (b) b.click(); }
+    return;
+  }
   if (t.id === 'deskChapter') { state.deskChapter = +t.value; renderDesk(); return; }
   if (t.id === 'deskGoal') {
     const p = writer.getWriterPrefs();
