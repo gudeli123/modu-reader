@@ -3369,6 +3369,7 @@ $('#btnOutlineWord').addEventListener('click', async () => {
 });
 
 /* ══════════════════════ 朗读 ══════════════════════ */
+let _speaking = false;
 let _speakTimer = null;
 let _speakQueue = [];
 let _speakVoice = null;
