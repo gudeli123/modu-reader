@@ -174,9 +174,13 @@ function applyPrefs() {
   root.style.setProperty('--reader-size', prefs.size + 'px');
   root.style.setProperty('--reader-lh', prefs.lh);
   root.style.setProperty('--reader-w', prefs.width + 'px');
-  root.style.setProperty('--reader-font',
-    prefs.family === 'kai' ? '"Kaiti SC","STKaiti","KaiTi",var(--serif)'
-      : prefs.family === 'sans' ? 'var(--sans)' : 'var(--serif)');
+  // 「宋 / 楷」用内置字体（vendor/fonts，按需加载）；「黑」用系统黑体。末尾都保留系统回退。
+  const FAMILY = {
+    serif: '"MODU Song","Songti SC","STSong","SimSun","Source Han Serif SC",Georgia,serif',
+    kai: '"MODU Kai","Kaiti SC","STKaiti","KaiTi",serif',
+    sans: 'var(--sans)'
+  };
+  root.style.setProperty('--reader-font', FAMILY[prefs.family] || FAMILY.serif);
   $('#fontVal').textContent = prefs.size;
   $('#lineRange').value = prefs.lh;
   $$('#fontSeg button').forEach(b => b.classList.toggle('on', b.dataset.fontfamily === prefs.family));
@@ -3365,11 +3369,27 @@ $('#btnOutlineWord').addEventListener('click', async () => {
 
 /* ══════════════════════ 朗读 ══════════════════════ */
 let _speaking = false;
+let _speakTimer = null;
 
 function stopSpeak() {
   if ('speechSynthesis' in window) speechSynthesis.cancel();
   _speaking = false;
+  if (_speakTimer) { clearInterval(_speakTimer); _speakTimer = null; }
   if ($('#btnSpeak')) $('#btnSpeak').textContent = '读这一章';
+}
+
+function pickZhVoice(voices) {
+  return voices.find(v => /^zh/i.test(v.lang || ''))
+    || voices.find(v => /Chinese|中文|普通话|国语|Mandarin|Wen|Xiaoxiao|Huihui/i.test(v.name || ''))
+    || null;
+}
+
+/* 语音列表常首次为空，要等它加载完（最长约 3 秒）再取，否则会误判成“没有语音”而不读 */
+function whenVoicesReady(cb, tries = 0) {
+  let vs = [];
+  try { vs = speechSynthesis.getVoices(); } catch { vs = []; }
+  if (vs.length || tries >= 15) { cb(vs); return; }
+  setTimeout(() => whenVoicesReady(cb, tries + 1), 200);
 }
 
 $('#btnSpeak').addEventListener('click', () => {
@@ -3381,21 +3401,34 @@ $('#btnSpeak').addEventListener('click', () => {
   const text = state.content.slice(ch.start, ch.end).replace(/\s+/g, '');
   if (!text.trim()) return;
 
-  const voices = speechSynthesis.getVoices();
-  const zh = voices.find(v => /^zh|Chinese/i.test(v.lang) || /Chinese|中文|普通话/i.test(v.name));
-  if (!voices.length) return toast('系统里没有可用语音，检查设备的「语音合成」设置');
-
-  const u = new SpeechSynthesisUtterance(text.slice(0, 4200));
-  if (zh) u.voice = zh;
-  u.lang = zh ? zh.lang : 'zh-CN';
-  u.rate = 1;
-  u.onend = stopSpeak;
-  u.onerror = stopSpeak;
-
-  speechSynthesis.speak(u);
+  // 先在用户手势内进入“朗读中”，避免二次点击；再等语音列表就绪
   _speaking = true;
   $('#btnSpeak').textContent = '停止';
-  toast(zh ? '开始朗读' : '系统里没有中文语音，可能读不准');
+  toast('正在准备朗读…');
+
+  whenVoicesReady((voices) => {
+    if (!_speaking) return;
+    const zh = pickZhVoice(voices);
+    const u = new SpeechSynthesisUtterance(text.slice(0, 4200));
+    if (zh) u.voice = zh;
+    u.lang = (zh && zh.lang) || 'zh-CN';
+    u.rate = 1;
+    u.onend = stopSpeak;
+    u.onerror = () => { stopSpeak(); toast('朗读启动失败，可换 Chrome 打开或安装中文语音包', 3200); };
+
+    let started = false;
+    try { speechSynthesis.speak(u); started = true; } catch { }
+    if (!started) { stopSpeak(); return toast('朗读启动失败'); }
+
+    toast(zh ? '开始朗读' : '这台设备没找到中文语音，可能读不出声；可在系统设置里安装中文语音包', 3600);
+
+    // Chrome 长文朗读到一半会暂停的已知问题：定时 resume 保活
+    if (_speakTimer) clearInterval(_speakTimer);
+    _speakTimer = setInterval(() => {
+      if (!_speaking) { clearInterval(_speakTimer); _speakTimer = null; return; }
+      try { speechSynthesis.resume(); } catch { }
+    }, 8000);
+  });
 });
 
 /* ══════════════════════ 排版 popover ══════════════════════ */
@@ -3413,7 +3446,21 @@ $('#typePop').addEventListener('click', (e) => {
     applyPrefs(); savePrefs();
   }
   const ff = e.target.closest('[data-fontfamily]');
-  if (ff) { prefs.family = ff.dataset.fontfamily; applyPrefs(); savePrefs(); }
+  if (ff) {
+    prefs.family = ff.dataset.fontfamily;
+    applyPrefs(); savePrefs();
+    // 「宋 / 楷」是打包进站点的字体，首次使用需联网下载；只在第一次给个提示，避免每次都弹
+    const baked = prefs.family === 'kai' ? 'MODU Kai' : prefs.family === 'serif' ? 'MODU Song' : '';
+    if (baked && document.fonts) {
+      let ready = false;
+      try { ready = document.fonts.check(`16px "${baked}"`); } catch { }
+      if (!ready && !localStorage.getItem('modu.fontTip')) {
+        localStorage.setItem('modu.fontTip', '1');
+        toast('首次切换这个字体会联网下载（约 1–2MB），下好后即可离线使用', 3600);
+      }
+      if (document.fonts.load) document.fonts.load(`16px "${baked}"`).catch(() => {});
+    }
+  }
   const th = e.target.closest('[data-theme]');
   if (th) { prefs.theme = th.dataset.theme; applyPrefs(); savePrefs(); }
 });
