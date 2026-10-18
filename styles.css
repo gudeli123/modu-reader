@@ -2053,6 +2053,9 @@ html[data-theme="night"] .in-note.good { text-decoration-color: #85b290; }
 #createOut li { margin: .2em 0; }
 .create-saved { margin-top: 14px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
 
-/* 修复：创作内容生成后会增长，让该面板可纵向滚动（否则生成后无法往下看） */
-#tab-create { overflow-y: auto; }
+/* 修复：创作 / 工位面板内容会增长，需要面板自身可纵向滚动（否则生成后无法往下看）
+   · 子块 flex:none，保证内容撑高时不被压缩，改由面板滚动 */
+#tab-create, #tab-desk { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+#tab-create > .create-form,
+#tab-create > .create-saved { flex: none; }
 .create-card-acts { margin-top: 7px; display: flex; gap: 6px; }
