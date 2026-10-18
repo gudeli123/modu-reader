@@ -5,8 +5,8 @@
  *       因此可以安全地"缓存优先"，把每次打开的网络往返降到接近 0（对国内弱网尤其关键）。
  * 不缓存 /api/ 请求（AI 代理）与跨域请求。
  */
-// 版本对齐：CACHE 名与 index.html 中资源引用的 ?v= 保持同步（当前 v21）
-const CACHE = 'modu-reader-v21';
+// 版本对齐：CACHE 名与 index.html 中资源引用的 ?v= 保持同步（当前 v22）
+const CACHE = 'modu-reader-v22';
 const CORE = [
   './',
   './index.html',
