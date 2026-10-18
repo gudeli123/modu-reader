@@ -2345,12 +2345,25 @@ export function plotRows(book, content) {
   });
 }
 
-export function riskOf(r, avgChars) {
+/* 前后置内容不算正文，不参与节奏评分（否则序言必被当"水章"） */
+export function isMatter(ch) { return !!ch && (ch.matter === 'pre' || ch.matter === 'post'); }
+export function isWaterEligible(ch) { return !!ch && ch.matter !== 'pre' && ch.matter !== 'post' && ch.matter !== 'open'; }
+
+function median(arr) {
+  const a = (arr || []).filter(x => Number.isFinite(x)).slice().sort((x, y) => x - y);
+  if (!a.length) return 0;
+  const m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+/** 风险分：阈值相对本书中位数，避免快/慢书系统性失灵 */
+export function riskOf(r, medChars, medDensity) {
   let s = 0;
-  if (r.density < 2) s += 2;
+  const dCut = Math.max(1.2, (medDensity || 0) * 0.5);
+  if (r.density < dCut) s += 2;
   if (r.turns === 0) s += 2;
   if (r.hook.score <= 1) s += 2;
-  if (r.chars < avgChars * 0.6) s += 1;
+  if (r.chars < (medChars || r.chars) * 0.6) s += 1;
   if (r.conflict === '弱') s += 1;
   return s;
 }
@@ -2579,9 +2592,13 @@ const OPEN_HEAD = /^(天|夜色|阳光|雨|风|雪|晨|黄昏|傍晚|清晨|午�
 
 export function openingCheck(book, content) {
   const names = castNames(content, book).slice(0, 6);
-  const chs = book.chapters.slice(0, 3);
+  const all = book.chapters;
+  let idxs = all.map((c, i) => (isMatter(c) ? -1 : i)).filter(i => i >= 0).slice(0, 3);
+  if (!idxs.length) idxs = all.slice(0, 3).map((c, i) => i);
 
-  return chs.map((c, i) => {
+  return idxs.map((ci) => {
+    const c = all[ci];
+    const i = ci;
     const t = content.slice(c.start, c.end);
     const body = t.replace(/^\s*第[^\n]{0,40}\n+/, "");
     const head = body.slice(0, 600);
@@ -2660,7 +2677,7 @@ export function emotionRows(book, content) {
     const max = Math.max(...scores);
     const idx = scores.indexOf(max);
     return { i, kind: max >= 0.8 ? EMO_DEF[idx].k : "平", cls: max >= 0.8 ? EMO_DEF[idx].cls : "e-ping", scores };
-  });
+  }).filter(r => !isMatter(book.chapters[r.i]));
 }
 
 export function emotionHTML(book, content) {
@@ -2697,7 +2714,7 @@ export function emotionHTML(book, content) {
     + `<span class="emo-dot e-ping"></span>平`;
 
   const notes = [];
-  if (worst.len >= 3) notes.push(`第 ${worst.from + 1}–${worst.from + worst.len} 章连续 ${worst.len} 章没有释放。读者会闷，中间要插一次小赢或一次揭秘。`);
+  if (worst.len >= 3) notes.push(`第 ${rows[worst.from].i + 1}–${rows[worst.from + worst.len - 1].i + 1} 章连续 ${worst.len} 章没有释放。读者会闷，中间要插一次小赢或一次揭秘。`);
   if (cold.length) notes.push(`第 ${cold.slice(0, 4).join("、")} 章的释放前面没有压抑或隐忍，爽得没有落差。`);
   if (!notes.length) notes.push("释放前基本都有铺垫，也没有长时间的空转。");
 
@@ -2763,20 +2780,32 @@ function giveVsShow(content) {
 export function paceBody(book, content) {
   const rows = plotRows(book, content);
   const avg = Math.round(rows.reduce((a, r) => a + r.chars, 0) / Math.max(1, rows.length));
+  const scorable = rows.filter(r => !isMatter(book.chapters[r.i]));
+  const base = scorable.length ? scorable : rows;
+  const medChars = Math.round(median(base.map(r => r.chars)));
+  const medDensity = median(base.map(r => r.density));
   rows.forEach(r => {
-    r.risk = riskOf(r, avg);
-    r.kind = (r.density < 2 || r.turns === 0) ? "water" : (r.hook.score <= 1 ? "flat" : "weak");
+    r.risk = riskOf(r, medChars, medDensity);
+    r.kind = (r.density < Math.max(1.2, medDensity * 0.5) || r.turns === 0) ? "water" : (r.hook.score <= 1 ? "flat" : "weak");
   });
 
-  const firstConflict = rows.find(r => r.conflict !== "弱");
-  const firstWin = rows.find(r => r.out === "赢");
-  const maxCrisis = rows.reduce((a, b) => (b.lose > a.lose ? b : a), rows[0]);
-  const risks = [...rows].filter(r => r.risk >= 2).sort((a, b) => b.risk - a.risk).slice(0, 3);
-  const riskSet = new Set(risks.map(r => r.i));
-  const picks = rows.filter(r => !riskSet.has(r.i) && r.events > 0)
+  const eligible = rows.filter(r => isWaterEligible(book.chapters[r.i]));
+  const water = eligible.filter(r => r.risk >= 2).sort((a, b) => b.risk - a.risk);
+  const capW = Math.min(20, Math.max(3, Math.round(eligible.length * 0.15)));
+  const risks = water.slice(0, capW);
+  const riskSet = new Set(water.map(r => r.i));
+  const pickPool = eligible.filter(r => !riskSet.has(r.i) && r.events > 0)
     .map(r => ({ r, score: r.events * 2 + r.turns * 3 + r.hook.score * 3 + (r.out === '赢' ? 2 : 0) + (r.conflict === '强' ? 2 : 0) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+    .sort((a, b) => b.score - a.score);
+  const capP = Math.min(12, Math.max(3, Math.round(eligible.length * 0.06)));
+  const picks = pickPool.slice(0, capP);
+  const matterRows = rows.filter(r => book.chapters[r.i] && book.chapters[r.i].matter);
+  const matterLine = matterRows.length
+    ? `<p class="ck-hint">前置 / 附加内容（不计节奏）：${matterRows.map(r => `<button class="at-link" data-goto-at="${book.chapters[r.i].start}">${escapeHtml(book.chapters[r.i].title)}</button>`).join("、")}</p>`
+    : '';
+  const firstConflict = rows.find(r => r.conflict !== "弱" && !isMatter(book.chapters[r.i]));
+  const firstWin = rows.find(r => r.out === "赢" && !isMatter(book.chapters[r.i]));
+  const maxCrisis = rows.reduce((a, b) => (b.lose > a.lose ? b : a), rows[0]);
   const atAttr = (r) => r ? `data-goto-at="${book.chapters[r.i].start}"` : '';
 
   return `
@@ -2785,10 +2814,12 @@ export function paceBody(book, content) {
     <span><b>${rows.length}</b><em>章</em></span>
     <span><b>${avg}</b><em>字 / 章</em></span>
     <span><b>${rows.reduce((a, r) => a + r.events, 0)}</b><em>个事件</em></span>
-    <span><b>${risks.length}</b><em>个风险章</em></span>
+    <span><b>${water.length}</b><em>个风险章</em></span>
   </div>
+  ${matterLine}
+  <div class="pl-legend"><span class="pl-cell r1">稳</span><span class="pl-cell r2">留意</span><span class="pl-cell r3">偏水</span> 每格一章，点格跳原文</div>
   <div class="pl-strip">
-    ${rows.slice(0, 60).map(r => `<span class="pl-cell ${r.risk >= 4 ? "r3" : r.risk >= 2 ? "r2" : "r1"}" data-goto-at="${book.chapters[r.i].start}" title="第${r.i + 1}章 · ${r.events} 个事件 · 转折 ${r.turns} · ${r.hook.type} · 点击跳原文">${r.i + 1}</span>`).join("")}
+    ${rows.map(r => `<span class="pl-cell ${r.risk >= 4 ? "r3" : r.risk >= 2 ? "r2" : "r1"}" data-goto-at="${book.chapters[r.i].start}" title="第${r.i + 1}章 · ${r.events} 个事件 · 转折 ${r.turns} · ${r.hook.type} · 点击跳原文">${r.i + 1}</span>`).join("")}
   </div>
   <div class="pl-nodes">
     <div class="pl-node" ${atAttr(firstConflict)}><span>第一个冲突</span><b>${firstConflict ? "第 " + (firstConflict.i + 1) + " 章" : "没有"}</b></div>
@@ -2813,6 +2844,8 @@ export function paceBody(book, content) {
       </div>
     </div>`;
   }).join("") : '<p class="ck-hint">没有明显空转的章节。每章都有事件，也都有钩子。</p>'}
+  ${water.length > risks.length ? `<div class="ch-sub">全部风险章（${water.length}）</div>
+  <p class="ck-hint">${water.map(r => `<button class="at-link" data-goto-at="${book.chapters[r.i].start}" title="${r.events} 个事件 · 转折 ${r.turns} · ${r.conflict}冲突 · ${r.hook.type}">第 ${r.i + 1} 章</button>`).join("")}</p>` : ''}
 
   <div class="ch-sub" id="secPick">推荐阅读章节</div>
   ${picks.length ? picks.map(({ r }) => {
@@ -2843,13 +2876,16 @@ export function buildInlineNotes(book, content) {
   const rows = plotRows(book, content);
   if (!rows.length) return notes;
 
-  const avg = Math.round(rows.reduce((a, r) => a + r.chars, 0) / Math.max(1, rows.length));
-  rows.forEach(r => { r.risk = riskOf(r, avg); });
-  const risks = rows.filter(r => r.risk >= 2).sort((a, b) => b.risk - a.risk);
+  const scorable = rows.filter(r => !isMatter(book.chapters[r.i]));
+  const base = scorable.length ? scorable : rows;
+  const medChars = Math.round(median(base.map(r => r.chars)));
+  const medDensity = median(base.map(r => r.density));
+  rows.forEach(r => { r.risk = riskOf(r, medChars, medDensity); });
+  const risks = rows.filter(r => isWaterEligible(book.chapters[r.i]) && r.risk >= 2).sort((a, b) => b.risk - a.risk);
   const riskSet = new Set(risks.map(r => r.i));
 
   // 章节级：推荐章（good）
-  rows.filter(r => !riskSet.has(r.i) && r.events > 0)
+  rows.filter(r => isWaterEligible(book.chapters[r.i]) && !riskSet.has(r.i) && r.events > 0)
     .map(r => ({ r, score: r.events * 2 + r.turns * 3 + r.hook.score * 3 + (r.out === '赢' ? 2 : 0) + (r.conflict === '强' ? 2 : 0) }))
     .sort((a, b) => b.score - a.score).slice(0, 3)
     .forEach(({ r }) => notes.push({
@@ -2859,7 +2895,7 @@ export function buildInlineNotes(book, content) {
     }));
 
   // 章节级：水章（warn）
-  risks.slice(0, 5).forEach(r => notes.push({
+  risks.slice(0, 8).forEach(r => notes.push({
     at: book.chapters[r.i].start, len: 0, level: 'warn',
     title: `偏水`,
     body: `第 ${r.i + 1} 章：${r.events} 个事件、${r.turns} 次转折，${r.conflict}冲突。可以并进上一章，或塞一个事件。`
@@ -3088,9 +3124,13 @@ export function chapterCardHTML(book, chapter, text) {
 export function plotHTML(book, content) {
   const rows = plotRows(book, content);
   const avg = Math.round(rows.reduce((a, r) => a + r.chars, 0) / Math.max(1, rows.length));
+  const scP = rows.filter(r => !isMatter(book.chapters[r.i]));
+  const baseP = scP.length ? scP : rows;
+  const medCharsP = Math.round(median(baseP.map(r => r.chars)));
+  const medDensityP = median(baseP.map(r => r.density));
   rows.forEach(r => {
-    r.risk = riskOf(r, avg);
-    r.kind = (r.density < 2 || r.turns === 0) ? 'water'
+    r.risk = riskOf(r, medCharsP, medDensityP);
+    r.kind = (r.density < Math.max(1.2, medDensityP * 0.5) || r.turns === 0) ? 'water'
       : (r.hook.score <= 1 ? 'flat' : 'weak');
   });
 
@@ -3100,10 +3140,8 @@ export function plotHTML(book, content) {
   const firstWin = rows.find(r => r.out === '赢');
   const maxCrisis = rows.reduce((a, b) => (b.lose > a.lose ? b : a), rows[0]);
 
-  const risks = [...rows]
-    .filter(r => r.risk >= 2)
-    .sort((a, b) => b.risk - a.risk)
-    .slice(0, 3);
+  const waterRows = rows.filter(r => isWaterEligible(book.chapters[r.i]) && r.risk >= 2).sort((a, b) => b.risk - a.risk);
+  const risks = waterRows.slice(0, Math.min(20, Math.max(3, Math.round(rows.length * 0.15))));
 
   const funcLine = (() => {
     const f = func.pct;
@@ -3120,11 +3158,11 @@ export function plotHTML(book, content) {
     <span><b>${rows.length}</b><em>章</em></span>
     <span><b>${avg}</b><em>字 / 章</em></span>
     <span><b>${rows.reduce((a, r) => a + r.events, 0)}</b><em>个事件</em></span>
-    <span><b>${risks.length}</b><em>个风险章</em></span>
+    <span><b>${waterRows.length}</b><em>个风险章</em></span>
   </div>
   <p style="font-size:11px;color:var(--ink-3)">每格一章，格子里是章号。颜色越深越结实，浅色是需要留意的地方——点开下面的「风险章」看具体问题。</p>
   <div class="pl-strip">
-    ${rows.slice(0, 60).map(r => `<span class="pl-cell ${r.risk >= 4 ? 'r3' : r.risk >= 2 ? 'r2' : 'r1'}" title="第${r.i + 1}章 · ${r.events} 个事件 · 转折 ${r.turns} · ${r.hook.type}">${r.i + 1}</span>`).join('')}
+    ${rows.map(r => `<span class="pl-cell ${r.risk >= 4 ? 'r3' : r.risk >= 2 ? 'r2' : 'r1'}" title="第${r.i + 1}章 · ${r.events} 个事件 · 转折 ${r.turns} · ${r.hook.type}">${r.i + 1}</span>`).join('')}
   </div>
 
   <div class="pl-nodes">
