@@ -3079,11 +3079,15 @@ export function buildInlineNotes(book, content) {
   rows.forEach(r => { r.risk = riskOf(r, medChars, medDensity); });
   const risks = rows.filter(r => isWaterEligible(book.chapters[r.i]) && r.risk >= 2).sort((a, b) => b.risk - a.risk);
   const riskSet = new Set(risks.map(r => r.i));
+  // 数量口径与「拆书报告 · 逐章节奏」保持一致：按本书比例取前 N，不再写死 3/8（否则几百章也只标几处）
+  const eligibleCount = rows.filter(r => isWaterEligible(book.chapters[r.i])).length;
+  const capW = Math.min(20, Math.max(3, Math.round(eligibleCount * 0.15)));   // 水章：前 15%，3~20 条
+  const capP = Math.min(12, Math.max(3, Math.round(eligibleCount * 0.06)));   // 推荐：前 6%，3~12 条
 
   // 章节级：推荐章（good）
   rows.filter(r => isWaterEligible(book.chapters[r.i]) && !riskSet.has(r.i) && r.events > 0)
     .map(r => ({ r, score: r.events * 2 + r.turns * 3 + r.hook.score * 3 + (r.out === '赢' ? 2 : 0) + (r.conflict === '强' ? 2 : 0) }))
-    .sort((a, b) => b.score - a.score).slice(0, 3)
+    .sort((a, b) => b.score - a.score).slice(0, capP)
     .forEach(({ r }) => notes.push({
       at: book.chapters[r.i].start, len: 0, level: 'good',
       title: `值得精读`,
@@ -3091,7 +3095,7 @@ export function buildInlineNotes(book, content) {
     }));
 
   // 章节级：水章（warn）
-  risks.slice(0, 8).forEach(r => notes.push({
+  risks.slice(0, capW).forEach(r => notes.push({
     at: book.chapters[r.i].start, len: 0, level: 'warn',
     title: `偏水`,
     body: `第 ${r.i + 1} 章：${r.events} 个事件、${r.turns} 次转折，${r.conflict}冲突。可以并进上一章，或塞一个事件。`
