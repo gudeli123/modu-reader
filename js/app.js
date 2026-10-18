@@ -2404,6 +2404,65 @@ function renderReuse(key = reuseRange) {
   box.innerHTML = ai.reuseHTML(r, key);
 }
 
+/* ══════════ 后台分析（Worker）══════════
+ * 「拆书 / 体检」要遍历全书，放后台线程算，避免点击后主线程冻结。
+ * Worker 不可用或出错时自动回退到主线程同步计算，功能不丢。
+ */
+let _anWorker = null;
+let _anBroken = false;
+let _anSeq = 0;
+const _anWait = new Map();
+
+function _ensureWorker() {
+  if (_anBroken) return null;
+  if (_anWorker) return _anWorker;
+  try {
+    const w = new Worker(new URL('./analyze.worker.js', import.meta.url), { type: 'module' });
+    w.onmessage = (e) => {
+      const d = e.data || {};
+      const waiter = _anWait.get(d.id);
+      if (!waiter) return;
+      _anWait.delete(d.id);
+      d.ok ? waiter.resolve(d.result) : waiter.reject(new Error(d.error || 'worker 计算失败'));
+    };
+    w.onerror = () => {
+      _anBroken = true; _anWorker = null;
+      for (const waiter of _anWait.values()) waiter.reject(new Error('worker 加载失败'));
+      _anWait.clear();
+    };
+    _anWorker = w;
+  } catch (e) {
+    _anBroken = true; _anWorker = null;
+  }
+  return _anWorker;
+}
+
+function _localAnalyze(job, p) {
+  if (job === 'wbcheck') return { wbcheck: ai.wbcheckHTML(p.book, p.content, p.books) };
+  return {
+    character: ai.characterHTML(p.book, p.content),
+    opening: ai.openingHTML(p.book, p.content),
+    emotion: ai.emotionHTML(p.book, p.content),
+    write: ai.writeHTML(p.book, p.content),
+    vols: ai.volTableHTML(ai.localVolumes(p.book, p.content), true)
+  };
+}
+
+async function runAnalyze(job, payload) {
+  const w = _ensureWorker();
+  if (!w) return _localAnalyze(job, payload);
+  try {
+    return await new Promise((resolve, reject) => {
+      const id = ++_anSeq;
+      _anWait.set(id, { resolve, reject });
+      w.postMessage({ id, job, payload });
+    });
+  } catch (e) {
+    _anBroken = true; _anWorker = null;
+    return _localAnalyze(job, payload);   // 兜底：退回主线程算，保证功能可用
+  }
+}
+
 async function showWbcheck() {
   if (!state.book) return;
   $('#outlineMask').hidden = false;
@@ -2412,10 +2471,10 @@ async function showWbcheck() {
   const body = $('#outlineBody');
   body.scrollTop = 0;
   const intro = localStorage.getItem('modu.intro.' + state.book.id) || '';
-  // 体检要同步遍历全书，先画出提示并让出主线程，避免“点了没反应”的卡顿感
+  // 体检要遍历全书：放到后台线程算，主线程不冻结
   body.innerHTML = '<p class="outline-loading">正在体检（本地规则，书越大越慢）…</p>';
-  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-  body.innerHTML = ai.wbcheckHTML(state.book, state.content, state.books);
+  const wb = await runAnalyze('wbcheck', { book: state.book, content: state.content, books: state.books });
+  body.innerHTML = wb.wbcheck;
   const ta = body.querySelector('#wbIntroInput');
   if (ta) ta.value = intro;
   const out = body.querySelector('#wbIntroOut');
@@ -2616,9 +2675,9 @@ async function showOutline(type, question, force = false) {
   }
 
   // 拆书：核心梗 → 结构层级 → 情节 → 人物 → 写法
-  // 下面几段 ai.* 会同步遍历全书，先画出提示并让出主线程，避免卡顿
+  // 人物/黄金三章/情绪/写法/分卷都要遍历全书：放后台线程算，主线程不冻结
   body.innerHTML = '<p class="outline-loading">正在拆书（本地规则，书越大越慢）…</p>';
-  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+  const hv = await runAnalyze('book', { book: state.book, content: state.content });
   body.innerHTML = `
     <div class="pl-nav">
       <a data-wjump="secCore">核心梗</a><i>·</i>
@@ -2633,10 +2692,10 @@ async function showOutline(type, question, force = false) {
     </div>
     <div id="secCore"></div>
     <div id="secVol"></div>
-    ${ai.characterHTML(state.book, state.content)}
-    ${ai.openingHTML(state.book, state.content)}
-    ${ai.emotionHTML(state.book, state.content)}
-    ${ai.writeHTML(state.book, state.content)}
+    ${hv.character}
+    ${hv.opening}
+    ${hv.emotion}
+    ${hv.write}
     <div id="secAI"></div>
     <div id="secMine">
       <div class="ch-sub">套用到我的书</div>
@@ -2670,7 +2729,7 @@ async function showOutline(type, question, force = false) {
       + html;
   };
 
-  renderVols(ai.volTableHTML(ai.localVolumes(state.book, state.content), true));
+  renderVols(hv.vols);
 
   if (!ai.aiReady()) {
     renderCore({ sentence: savedCore, start: '', turn: '', end: '' }, { offline: true });
