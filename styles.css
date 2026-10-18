@@ -2052,4 +2052,7 @@ html[data-theme="night"] .in-note.good { text-decoration-color: #85b290; }
 #createOut ul, #createOut ol { padding-left: 1.3em; margin: .3em 0 .7em; }
 #createOut li { margin: .2em 0; }
 .create-saved { margin-top: 14px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+
+/* 修复：创作内容生成后会增长，让该面板可纵向滚动（否则生成后无法往下看） */
+#tab-create { overflow-y: auto; }
 .create-card-acts { margin-top: 7px; display: flex; gap: 6px; }
