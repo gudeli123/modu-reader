@@ -292,33 +292,32 @@ function isHeading(line) {
   return false;
 }
 
-export function splitChapters(text) {
-  const lines = [];
-  let off = 0;
-  for (const raw of text.split('\n')) {
-    lines.push({ text: raw, start: off });
-    off += raw.length + 1;
-  }
+/**
+ * 由「候选标题行」构建章节结构。抽出来给两条路径共用：
+ *   ① 本地规则（splitChapters）② AI 整理目录（模型选出标题行后仍走这里收口）。
+ * heads：形如 [{ title, start }] 的候选标题行（start 为该行行首在全文中的偏移）。
+ * 处理：同名去重（书首目录页会与正文重复）→ 剔除相邻过密的目录页块 → 补齐卷首与前后置内容标记。
+ */
+export function buildChapters(text, heads) {
+  heads = (heads || [])
+    .map(h => ({ title: String(h.title || '').trim(), start: h.start }))
+    .filter(h => h.title && Number.isFinite(h.start))
+    .sort((a, b) => a.start - b.start);
 
-  let heads = [];
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].text.trim();
-    if (isHeading(t)) heads.push({ title: t, start: lines[i].start });
-  }
-
-  // 去掉目录页里的重复标题：同名标题保留最靠后的那次
+  // 去掉目录页里的重复标题：同名标题保留最靠后的那次（正文在后、目录页在前）
   if (heads.length > 2) {
+    const key = (t) => t.replace(/\s+/g, '');
     const last = new Map();
-    heads.forEach((h, i) => last.set(h.title, i));
+    heads.forEach((h, i) => last.set(key(h.title), i));
     heads = heads.filter((h, i) => {
-      const li = last.get(h.title);
+      const li = last.get(key(h.title));
       if (li === i) return true;
       return heads[li].start - h.start < 600; // 近距离同名，可能是卷名重复，保留
     });
   }
 
   // 相邻标题过密 → 多半是书首「目录页」未去净（目录页标题与正文标题写法不一致时，上面的去重会漏掉它）
-  // 改为：只剔除密集块，保留真正分散的正文标题；若剔除后一个都不剩，再按老办法回落。
+  // 只剔除密集块，保留真正分散的正文标题；若剔除后一个都不剩，再按老办法回落。
   if (heads.length >= 2) {
     const keep = heads.filter((h, i) => {
       const gn = i + 1 < heads.length ? heads[i + 1].start - h.start : Infinity;
@@ -371,6 +370,56 @@ export function splitChapters(text) {
   }
   if (!chapters.length) chapters.push({ title: '全文', start: 0, end: text.length });
   return chapters;
+}
+
+/**
+ * 供「AI 整理目录」使用：从全文挑出“像标题”的行（连同行号与偏移），交给模型判断真伪。
+ * 比 isHeading 更宽松（宁多勿漏）——把“区分”这件事交给模型；正文句子与书首目录页条目由模型剔除。
+ * score：3 = 命中章/回/卷/序等模式；1 = 短且无标点的疑似标题行。
+ * 返回 [{ id, line, start, text, score }]，id 为全局编号（从 1 开始），用于让模型回填。
+ */
+export function candidateLines(text) {
+  const lines = text.split('\n');
+  const strong = [];
+  const weak = [];
+  let off = 0;
+  for (let li = 0; li < lines.length; li++) {
+    const raw = lines[li];
+    const start = off;
+    off += raw.length + 1;
+    const t = raw.trim();
+    if (!t || t.length > 42) continue;
+    if (/[。！？!?]/.test(t)) continue;                  // 含句末标点 → 句子
+    if (t.length > 24 && /[，,；;]/.test(t)) continue;    // 长且带逗号 → 句子
+    const core = t.replace(HEAD_WRAP, '').replace(HEAD_PREFIX, '').trim();
+    if (RE_CN.test(core) || RE_EN.test(core) || RE_VOL.test(core) || RE_SPECIAL.test(core) || RE_SPECIAL2.test(core)) {
+      strong.push({ line: li + 1, start, text: t, score: 3 });
+    } else if (t.length <= 16 && !/[，,；;：:、]/.test(t) && /[\u4e00-\u9fa5A-Za-z0-9]/.test(t)) {
+      weak.push({ line: li + 1, start, text: t, score: 1 });
+    }
+  }
+  // 疑似短行均匀抽样，避免正文里满屏短句把候选撑爆
+  const CAP_WEAK = 400;
+  let weakKeep = weak;
+  if (weak.length > CAP_WEAK) {
+    const step = weak.length / CAP_WEAK;
+    weakKeep = [];
+    for (let i = 0; i < CAP_WEAK; i++) weakKeep.push(weak[Math.floor(i * step)]);
+  }
+  const all = strong.concat(weakKeep).sort((a, b) => a.start - b.start);
+  all.forEach((c, i) => { c.id = i + 1; });
+  return all;
+}
+
+export function splitChapters(text) {
+  const heads = [];
+  let off = 0;
+  for (const raw of text.split('\n')) {
+    const t = raw.trim();
+    if (isHeading(t)) heads.push({ title: t, start: off });
+    off += raw.length + 1;
+  }
+  return buildChapters(text, heads);
 }
 
 /* ══════════ 主入口 ══════════ */
