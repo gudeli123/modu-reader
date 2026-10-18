@@ -3,7 +3,7 @@
  * 策略：同源 GET 走 network-first，成功则回写缓存；断网时回退缓存。
  * 不缓存 /api/ 请求（AI 代理）与跨域请求。
  */
-const CACHE = 'modu-reader-v2';
+const CACHE = 'modu-reader-v3';
 const CORE = [
   './',
   './index.html',
@@ -45,7 +45,7 @@ self.addEventListener('fetch', (e) => {
 
   e.respondWith((async () => {
     try {
-      const res = await fetch(req);
+      const res = await fetch(req, { cache: 'no-cache' });   // 强制回源校验，避免读到旧缓存
       if (res && res.ok) {
         const c = await caches.open(CACHE);
         c.put(req, res.clone());

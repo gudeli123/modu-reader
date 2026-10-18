@@ -137,18 +137,38 @@ export function extractThreads(book, content) {
 /* ═══════════ 人物一致性（断档 / 年龄冲突 / 称谓） ═══════════ */
 function nameEsc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-export function aliasVariants(name, text) {
-  const v = {};
-  v[name] = (v[name] || 0);
-  const count = (re) => { let n = 0, m; const r = new RegExp(re, 'g'); while ((m = r.exec(text))) n++; return n; };
-  v[name] = count(nameEsc(name));
-  if (name.length >= 3) {
-    const given = name.slice(1);
-    v[given] = count(nameEsc(given));
-    const small = name[0] + name.slice(-1);
-    if (small !== name) v[small] = count(nameEsc(small));
+/** 一个人物的常用称呼集合：规范名 + 省略姓氏的称呼。
+ *  三字及以上取「后两字」（如「林黛玉」→「黛玉」）；两个字就用两个字本身。 */
+export function nameForms(name) {
+  name = String(name || '').trim();
+  if (!name) return [];
+  const forms = [name];
+  if (name.length >= 3) forms.push(name.slice(-2));
+  return [...new Set(forms)];
+}
+
+/** 在文本中找出任一称呼的出现位置；重叠时保留更长的那个，避免重复计数。 */
+function findNameMatches(text, forms) {
+  const raw = [];
+  for (const f of forms) {
+    if (!f) continue;
+    let i = 0;
+    while ((i = text.indexOf(f, i)) !== -1) { raw.push({ start: i, end: i + f.length }); i += f.length; }
   }
-  return Object.keys(v).map(k => ({ form: k, n: v[k] })).filter(x => x.n > 0).sort((a, b) => b.n - a.n);
+  raw.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  const out = []; let lastEnd = -1;
+  for (const m of raw) { if (m.start >= lastEnd) { out.push(m); lastEnd = m.end; } }
+  return out;
+}
+
+function countOcc(text, s) { let n = 0, i = 0; while ((i = text.indexOf(s, i)) !== -1) { n++; i += s.length; } return n; }
+
+/** 每个称呼形态的出现次数（三字名给出「全名」与「后两字」两种，两字名只有本身）。 */
+export function aliasVariants(name, text) {
+  return nameForms(name)
+    .map((form) => ({ form, n: countOcc(text || '', form) }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n || b.form.length - a.form.length);
 }
 
 export function consistencyScan(book, content, names) {
@@ -158,26 +178,23 @@ export function consistencyScan(book, content, names) {
   const gaps = [], numbers = [], aliases = [];
   for (const nm of names) {
     if (!nm) continue;
-    const chs = [];
-    let from = 0, cnt = 0;
-    while (true) {
-      const i = text.indexOf(nm, from);
-      if (i < 0) break;
-      cnt++; chs.push(chapterIndexAt(cs, i));
-      from = i + nm.length;
-      if (cnt > 3000) break;
-    }
-    if (!cnt) continue;
+    const forms = nameForms(nm);
+    // 断档/出场统计：把同一人物的各称呼（全名与简称）合并计位置
+    const ms = findNameMatches(text, forms);
+    if (!ms.length) continue;
+    const chs = ms.map((m) => chapterIndexAt(cs, m.start));
     const uniqCh = [...new Set(chs)].sort((a, b) => a - b);
     let maxGap = 0, gapAt = -1;
     for (let i = 1; i < uniqCh.length; i++) {
       const g = uniqCh[i] - uniqCh[i - 1];
       if (g > maxGap) { maxGap = g; gapAt = uniqCh[i - 1]; }
     }
-    aliases.push({ name: nm, count: cnt, first: uniqCh[0], last: uniqCh[uniqCh.length - 1], maxGap, gapAt, variants: aliasVariants(nm, text) });
+    aliases.push({ name: nm, count: ms.length, first: uniqCh[0], last: uniqCh[uniqCh.length - 1], maxGap, gapAt, variants: aliasVariants(nm, text) });
     if (maxGap >= 3) gaps.push({ name: nm, gap: maxGap, from: gapAt });
 
-    const re = new RegExp(nameEsc(nm) + '[^。！？\\n]{0,8}?(\\d{1,3})\\s*(岁|年纪|岁半)', 'g');
+    // 年龄/数值：任一称呼后接岁数都算（如「黛玉今年十六岁」）
+    const alt = forms.map(nameEsc).join('|');
+    const re = new RegExp('(?:' + alt + ')[^。！？\\n]{0,8}?(\\d{1,3})\\s*(?:岁|年纪|岁半)', 'g');
     const ages = {}; let m;
     while ((m = re.exec(text))) ages[m[1]] = (ages[m[1]] || 0) + 1;
     const ks = Object.keys(ages);
