@@ -9,6 +9,7 @@ import * as db from './db.js';
 import { parseFile, escapeHtml, cnToNum, readingTime, ocrPdf, splitChapters } from './parse.js';
 import * as ai from './ai.js';
 import * as writer from './writer.js';
+import * as xdocx from './exportdocx.js';
 
 /* 全局错误兜底：记录未捕获异常，避免个别错误导致白屏且无从排查 */
 window.addEventListener('error', (e) => {
@@ -961,6 +962,7 @@ async function renderDesk() {
       <button class="mini-btn" data-act="export-plain">纯文本（通用）</button>
       <button class="mini-btn" data-act="export-md">Markdown</button>
       <button class="mini-btn" data-act="export-body">仅正文（无标题）</button>
+      <button class="mini-btn" data-act="export-docx">Word（.docx）</button>
     </div>
     <div class="desk-tip">纯文本可直接粘贴到起点 / 番茄作家助手的「新建章节」里。</div>
   </div>`;
@@ -1106,8 +1108,13 @@ async function onDeskClick(e) {
     return;
   }
 
-  if (act === 'export-plain' || act === 'export-md' || act === 'export-body') {
+  if (act === 'export-plain' || act === 'export-md' || act === 'export-body' || act === 'export-docx') {
     const name = (state.book.title || '未命名').replace(/[\\/:*?"<>|]/g, '_');
+    if (act === 'export-docx') {
+      const txt = writer.exportPlain(state.book, state.content, { titles: true, blank: true });
+      await exportWord(name, xdocx.blocksFromText(txt, { title: state.book.title || '未命名' }));
+      return;
+    }
     if (act === 'export-body') await deliverText(name + '-正文.txt', writer.exportPlain(state.book, state.content, { titles: false, blank: true }), 'text/plain');
     else if (act === 'export-md') await deliverText(name + '.md', writer.exportPlain(state.book, state.content, { titles: true, blank: true }), 'text/markdown');
     else await deliverText(name + '.txt', writer.exportPlain(state.book, state.content, { titles: true, blank: true }), 'text/plain');
@@ -1715,6 +1722,15 @@ $('#btnExportMat')?.addEventListener('click', async () => {
   await deliverText(`素材库-${dateStamp()}.md`, md);
 });
 
+$('#btnExportMatWord')?.addEventListener('click', async () => {
+  const all = await db.listMaterials();
+  if (!all.length) return toast('素材库是空的');
+  const html = ['<h1>素材库</h1>', ...all.map(m =>
+    `<h3>《${escapeHtml(m.bookTitle || '')}》${m.chapter ? ' · ' + escapeHtml(m.chapter) : ''} · ${MAT_NAME[m.kind] || '综合'}</h3><p>${escapeHtml(m.text)}</p>`
+  )].join('');
+  await exportWord('素材库', xdocx.blocksFromHtml(html));
+});
+
 /* ══════════════════════ 创作生成 ══════════════════════ */
 let createScope = 'book';
 let createType = 'plot';
@@ -1866,6 +1882,15 @@ $('#btnExportCreate').addEventListener('click', async () => {
     `## ${CREATE_NAME[c.type] || '设定'} · ${c.scopeLabel || ''}\n\n${c.text}\n\n— 《${c.bookTitle || ''}》 ${fmtDate(c.createdAt)}\n`
   )].join('\n');
   await deliverText(`创作库-${dateStamp()}.md`, md);
+});
+
+$('#btnExportCreateWord').addEventListener('click', async () => {
+  const all = await db.listCreations();
+  if (!all.length) return toast('创作库是空的');
+  const html = ['<h1>创作库</h1>', ...all.map(c =>
+    `<h3>${CREATE_NAME[c.type] || '设定'} · ${escapeHtml(c.scopeLabel || '')} · 《${escapeHtml(c.bookTitle || '')}》</h3><p>${escapeHtml(c.text)}</p>`
+  )].join('');
+  await exportWord('创作库', xdocx.blocksFromHtml(html));
 });
 
 /* ══════════════════════ 笔记面板 ══════════════════════ */
@@ -2807,6 +2832,17 @@ $('#btnOutlineSave').addEventListener('click', async () => {
   $('#outlineMask').hidden = true;
 });
 
+$('#btnOutlineWord').addEventListener('click', async () => {
+  if (!state.outline) return;
+  const title = ($('#outlineTitle').textContent || '拆书报告').trim();
+  const blocks = xdocx.blocksFromHtml(state.outline.html || '', { title });
+  if (blocks.length <= 1 && state.outline.md) {
+    await exportWord(title, xdocx.blocksFromText(state.outline.md, { title }));
+    return;
+  }
+  await exportWord(title, blocks);
+});
+
 /* ══════════════════════ 朗读 ══════════════════════ */
 let _speaking = false;
 
@@ -3346,6 +3382,30 @@ function download(filename, text, type = 'text/markdown') {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/** 二进制下载（docx 等） */
+function downloadBytes(filename, bytes, mime) {
+  const blob = new Blob([bytes], { type: mime });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/** 统一导出 Word（.docx）：网页版直接下载；鸿蒙 App 内降级复制纯文本 */
+async function exportWord(baseName, blocks) {
+  try {
+    if (IS_APP) { showTextModal(baseName + '.txt', xdocx.blocksToPlain(blocks)); return; }
+    const bytes = xdocx.docxBytes(blocks, baseName);
+    downloadBytes(xdocx.fileName(baseName, 'docx'), bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    toast('Word 已导出');
+  } catch (err) {
+    toast('导出失败：' + ((err && err.message) || err));
+  }
 }
 
 async function copyText(t) {
