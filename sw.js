@@ -3,7 +3,8 @@
  * 策略：同源 GET 走 network-first，成功则回写缓存；断网时回退缓存。
  * 不缓存 /api/ 请求（AI 代理）与跨域请求。
  */
-const CACHE = 'modu-reader-v4';
+// 版本对齐：CACHE 名与 index.html 中资源引用的 ?v= 保持同步（当前 v16）
+const CACHE = 'modu-reader-v16';
 const CORE = [
   './',
   './index.html',
