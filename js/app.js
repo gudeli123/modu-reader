@@ -2399,8 +2399,27 @@ function renderReuse(key = reuseRange) {
   box.innerHTML = ai.reuseHTML(r, key);
 }
 
+function showWbcheck() {
+  if (!state.book) return;
+  $('#outlineMask').hidden = false;
+  $('#outlineTitle').textContent = `进阶体检 · ${state.book.title}`;
+  $('#outlineHint').textContent = '本地规则 · 不调用模型';
+  const body = $('#outlineBody');
+  body.scrollTop = 0;
+  const intro = localStorage.getItem('modu.intro.' + state.book.id) || '';
+  body.innerHTML = ai.wbcheckHTML(state.book, state.content, state.books);
+  const ta = body.querySelector('#wbIntroInput');
+  if (ta) ta.value = intro;
+  const out = body.querySelector('#wbIntroOut');
+  if (out) out.innerHTML = ai.introCheckHTML(intro);
+  state.outline = { type: 'wbcheck', chapterIndex: state.chapter, md: '', html: body.innerHTML, cacheKey: 'wb|' + state.book.id };
+  $('#btnOutlineCopy').disabled = false;
+  $('#btnOutlineSave').disabled = false;
+}
+
 async function showOutline(type, question, force = false) {
   if (!state.book) return;
+  if (type === 'wbcheck') { showWbcheck(); return; }
   const isChapter = type === 'chapter';
   const isWriting = type === 'writing';
   const isSummary = type === 'summary';
@@ -2598,6 +2617,7 @@ async function showOutline(type, question, force = false) {
       <a data-wjump="secEmo">情绪节奏</a><i>·</i>
       <a data-wjump="secPick">推荐</a><i>·</i>
       <a data-wjump="secWrite">写法</a><i>·</i>
+      <a data-outline="wbcheck">进阶体检</a><i>·</i>
       <a data-wjump="secAI">模型</a>
     </div>
     <div id="secCore"></div>
@@ -2812,6 +2832,8 @@ $('#outlineHint').addEventListener('click', (e) => {
 });
 
 $('#outlineBody').addEventListener('click', async (e) => {
+  const ob = e.target.closest('[data-outline]');
+  if (ob) { showOutline(ob.dataset.outline); return; }
   const wj = e.target.closest('[data-wjump]');
   if (wj) {
     const el = document.getElementById(wj.dataset.wjump);
@@ -2931,6 +2953,13 @@ $('#outlineBody').addEventListener('click', async (e) => {
 });
 
 $('#outlineBody').addEventListener('input', (e) => {
+  const wi = e.target.closest('#wbIntroInput');
+  if (wi && state.book) {
+    localStorage.setItem('modu.intro.' + state.book.id, wi.value);
+    const out = document.getElementById('wbIntroOut');
+    if (out) out.innerHTML = ai.introCheckHTML(wi.value);
+    return;
+  }
   const el = e.target.closest('[data-core-edit]');
   if (!el || !state.book) return;
   localStorage.setItem('modu.core.' + state.book.id, el.textContent.trim());
