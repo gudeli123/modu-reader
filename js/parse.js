@@ -238,6 +238,22 @@ const RE_EN = /^(CHAPTER|Chapter|chapter)\s+([IVXLCDM]{1,7}|\d{1,3})\b/;
 const RE_SPECIAL = /^(序章|序言|自序|代序|译序|总序|前言|引言|引子|楔子|开场白|尾声|后记|跋|附录|导论|导读|凡例|目录|终章|大结局|写在前面|出版说明)$/;
 const RE_SPECIAL2 = /^(序|跋|尾声|后记|附录)\s*[:：]?\s*.{0,14}$/;
 
+/* 前后置内容：不是正文，不参与节奏评分（否则"序言"会被当成水章）。 */
+const MATTER_OPEN = /^(楔子|引子|开场白|序幕)\s*$/;
+const MATTER_PRE = /^(序章|序言|自序|代序|译序|总序|推荐序|前言|引言|引论|导论|导读|凡例|目录|出版说明|写在前面|作者的话|作者简介|内容简介|版权|版权页|免责声明|致谢)(\s|$|[:：])/;
+const MATTER_POST = /^(尾声|后记|跋|附录|番外|番外篇)(\s|$|[:：])/;
+const MATTER_PRE_LOOSE = /^(序|前言|目录|版权|内容简介)/;
+
+/** 判定章节是否为前置/开篇/附加内容：返回 ''(正文) / 'pre' / 'open' / 'post' */
+export function matterOf(title = '') {
+  const t = String(title || '').trim();
+  if (!t) return '';
+  if (MATTER_OPEN.test(t)) return 'open';
+  if (MATTER_PRE.test(t) || MATTER_PRE_LOOSE.test(t)) return 'pre';
+  if (MATTER_POST.test(t)) return 'post';
+  return '';
+}
+
 export function cnToNum(s) {
   if (/^\d+$/.test(s)) return parseInt(s, 10);
   const map = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
@@ -319,14 +335,19 @@ export function splitChapters(text) {
 
   if (heads[0].start > 40) {
     const lead = text.slice(0, heads[0].start).trim();
-    if (lead.length > 0) chapters.push({ title: '卷首', start: 0, end: heads[0].start, lead: true });
+    if (lead.length > 0) {
+      const lt = lead.slice(0, 160);
+      const leadMatter = /序|前言|版权|目录|内容简介|作者简介|出版说明|致谢/.test(lt)
+        ? 'pre' : (lead.length < 3000 ? 'pre' : 'open');
+      chapters.push({ title: '卷首', start: 0, end: heads[0].start, lead: true, matter: leadMatter });
+    }
   }
 
   for (let i = 0; i < heads.length; i++) {
     const start = heads[i].start;
     const end = i + 1 < heads.length ? heads[i + 1].start : text.length;
     if (end - start < 5) continue;
-    chapters.push({ title: heads[i].title, start, end });
+    chapters.push({ title: heads[i].title, start, end, matter: matterOf(heads[i].title) });
   }
   if (!chapters.length) chapters.push({ title: '全文', start: 0, end: text.length });
   return chapters;
