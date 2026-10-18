@@ -494,8 +494,8 @@ function toggleInline() {
   renderReader(state.chapter);
 }
 
-/* ══════════ 一键标记本章 ══════════ */
-// 把若干条目（含全书/局部偏移或原文 quote）落成标记；chapterIndex 指定所属章
+/* ══════════ 一键标记本章（按人物归类） ══════════ */
+// 落成标记；chapterIndex 指定所属章；person=主要人物，color 按人物分配
 async function applyChapterTags(chapterIndex, ch, items, opts = {}) {
   const ranges = state.marks.map(m => ({ s: m.start, e: m.end }));
   const overlap = (s, e) => ranges.some(r => s < r.e && r.s < e);
@@ -510,10 +510,11 @@ async function applyChapterTags(chapterIndex, ch, items, opts = {}) {
     }
     if (s < 0 || e <= s) continue;
     if (overlap(s, e)) continue;
+    const person = it.person || '';
     const m = {
       id: db.uid(), bookId: state.book.id, chapterIndex,
       start: s, end: e, text: state.content.slice(s, e),
-      color: it.color, kind: it.kind, note: '', createdAt: Date.now()
+      color: it.color || ai.personColor(person), person, kind: it.kind || '', note: '', createdAt: Date.now()
     };
     await db.putMark(m);
     state.marks.push(m);
@@ -531,7 +532,9 @@ async function applyChapterTags(chapterIndex, ch, items, opts = {}) {
 
 function localChapterTags(txt) {
   try {
-    return ai.autoTagChapter(txt).map(t => ({ kind: t.kind, color: t.color, quote: t.text, start: t.start, end: t.end }));
+    let names = [];
+    try { names = ai.detectNames(state.content, state.book) || []; } catch (e) { names = []; }
+    return ai.autoTagChapter(txt, names).map(t => ({ person: t.person, color: t.color, quote: t.text, start: t.start, end: t.end }));
   } catch (e) { return []; }
 }
 
@@ -542,10 +545,10 @@ async function autoTagCurrentChapter() {
   const txt = state.content.slice(ch.start, ch.end);
   const btn = $('#btnAutoTag');
 
-  // 1) 已配置 AI：让模型判断（更准，耗 token）
+  // 1) 已配置 AI：让模型按人物归类（更准，耗 token）
   if (ai.aiReady()) {
     if (btn) { btn.disabled = true; btn.classList.add('on'); }
-    toast('AI 正在读本章，挑可借鉴的句子…');
+    toast('AI 正在读本章，按人物挑句子…');
     let acc = '';
     try {
       await ai.askAI(ai.promptAutoTag(state.book, ch, txt), {
@@ -560,7 +563,7 @@ async function autoTagCurrentChapter() {
     if (btn) { btn.disabled = false; btn.classList.remove('on'); }
     if (!items.length) { toast('本章没找到可借鉴的文段'); return; }
     const added = await applyChapterTags(state.chapter, ch, items);
-    toast(added ? `已标出 ${added} 处可借鉴文段（AI 判断）` : '本章已标记过，无新增');
+    toast(added ? `已按人物标出 ${added} 处（AI 判断）` : '本章已标记过，无新增');
     return;
   }
 
@@ -568,7 +571,7 @@ async function autoTagCurrentChapter() {
   const items = localChapterTags(txt);
   if (!items.length) { toast('本章没找到可借鉴的文段（在「设置」配置 AI 后更准）'); return; }
   const added = await applyChapterTags(state.chapter, ch, items);
-  toast(added ? `已标出 ${added} 处可借鉴文段（本地规则）` : '本章已标记过，无新增');
+  toast(added ? `已按人物标出 ${added} 处（本地规则）` : '本章已标记过，无新增');
 }
 
 $('#btnAutoTag')?.addEventListener('click', autoTagCurrentChapter);
@@ -578,7 +581,7 @@ async function clearChapterTags() {
   if (!state.book) return;
   const ch = state.book.chapters[state.chapter];
   if (!ch) return;
-  const targets = state.marks.filter(m => m.kind && m.start >= ch.start && m.start < ch.end);
+  const targets = state.marks.filter(m => (m.person || m.kind) && m.start >= ch.start && m.start < ch.end);
   if (!targets.length) { toast('本章没有自动标记'); return; }
   if (!confirm(`清除本章的 ${targets.length} 处自动标记？`)) return;
   for (const m of targets) await db.deleteMark(m.id);
@@ -598,7 +601,7 @@ async function batchTagByAI() {
   if (!ai.aiReady()) { toast('请先在「设置」配置 AI'); return; }
   const chs = state.book.chapters;
   if (!chs.length) return;
-  if (!confirm(`将对全书 ${chs.length} 章逐一用 AI 标记。\n耗时较长、会消耗较多 token，期间请勿关闭页面。继续？`)) return;
+  if (!confirm(`将对全书 ${chs.length} 章逐一用 AI 按人物标记。\n耗时较长、会消耗较多 token，期间请勿关闭页面。继续？`)) return;
   const btn = $('#btnBatchTag');
   if (btn) btn.disabled = true;
   let total = 0;
@@ -623,14 +626,13 @@ async function batchTagByAI() {
 
 $('#btnBatchTag')?.addEventListener('click', batchTagByAI);
 
-/* ── 把自动标记收进素材库 ── */
-const TAG_TO_MAT = { portrait: 'mix', scene: 'mood', action: 'action', mood: 'face', dialog: 'beat' };
+/* ── 把自动标记收进素材库（按当前人物筛选） ── */
 $('#btnTagsToMaterial')?.addEventListener('click', async () => {
   if (!state.book) return;
   const f = state.noteFilter;
-  const kind = f.startsWith('kind:') ? f.slice(5) : null;
-  const marks = state.marks.filter(m => m.kind && (!kind || m.kind === kind));
-  if (!marks.length) { toast('没有可收的自动标记（可先在筛选栏选一个类别）'); return; }
+  const person = f.startsWith('person:') ? decodeURIComponent(f.slice(7)) : null;
+  const marks = state.marks.filter(m => (m.person || m.kind) && (!person || m.person === person));
+  if (!marks.length) { toast('没有可收的自动标记（可先在筛选栏选一个人物）'); return; }
   const existing = await db.listMaterials();
   const have = new Set(existing.map(x => (x.text || '').trim()));
   let n = 0;
@@ -638,7 +640,7 @@ $('#btnTagsToMaterial')?.addEventListener('click', async () => {
     const t = (m.text || '').trim();
     if (!t || have.has(t)) continue;
     await db.putMaterial({
-      id: db.uid(), text: t, kind: TAG_TO_MAT[m.kind] || 'mix',
+      id: db.uid(), text: t, kind: 'mix',
       chapter: state.book.chapters[m.chapterIndex]?.title || '',
       bookId: state.book.id, bookTitle: state.book.title,
       at: m.start, createdAt: Date.now()
@@ -648,6 +650,20 @@ $('#btnTagsToMaterial')?.addEventListener('click', async () => {
   }
   toast(n ? `已把 ${n} 条收进素材库` : '这些句子已在素材库里了');
 });
+
+/* ── 人物筛选条：按标记里出现的人物动态生成 ── */
+function renderPersonBar() {
+  const bar = $('#personBar');
+  if (!bar) return;
+  const set = [];
+  for (const m of state.marks) { if (m.person && !set.includes(m.person)) set.push(m.person); }
+  if (!set.length) { bar.innerHTML = ''; return; }
+  const cur = state.noteFilter;
+  bar.innerHTML = set.map(p => {
+    const f = 'person:' + encodeURIComponent(p);
+    return `<button data-f="${f}" class="${cur === f ? 'on' : ''}">${escapeHtml(p)}</button>`;
+  }).join('');
+}
 
 let inlineTip = null;
 function showInlineTip(el) {
@@ -2081,10 +2097,17 @@ function renderNotes() {
   if (!state.book) return;
   const box = $('#notesList');
   const f = state.noteFilter;
+  renderPersonBar();
   const kindFilter = f.startsWith('kind:') ? f.slice(5) : null;
+  const personFilter = f.startsWith('person:') ? decodeURIComponent(f.slice(7)) : null;
 
   let items = [];
-  if (kindFilter) {
+  if (personFilter) {
+    for (const m of state.marks) {
+      if (m.person !== personFilter) continue;
+      items.push({ kind: 'mark', at: m.start, chapterIndex: chapterAt(m.start).index, data: m });
+    }
+  } else if (kindFilter) {
     for (const m of state.marks) {
       if (m.kind !== kindFilter) continue;
       items.push({ kind: 'mark', at: m.start, chapterIndex: chapterAt(m.start).index, data: m });
@@ -2106,7 +2129,7 @@ function renderNotes() {
   items.sort((a, b) => a.chapterIndex - b.chapterIndex || a.at - b.at);
 
   if (!items.length) {
-    box.innerHTML = `<div class="notes-empty">${kindFilter ? '这一类还没有标记。<br>点顶栏「一键标记」自动标出本章可借鉴的文段。' : (f === 'note' ? '还没有写过笔记。<br>选中文字 → 点「笔记」。' : '还没有标记。<br>选中正文任意一段，就能高亮或记笔记。')}</div>`;
+    box.innerHTML = `<div class="notes-empty">${personFilter ? `还没有「${escapeHtml(personFilter)}」的标记。<br>点顶栏「一键标记」按人物标出本章可借鉴的文段。` : (kindFilter ? '这一类还没有标记。<br>点顶栏「一键标记」自动标出本章可借鉴的文段。' : (f === 'note' ? '还没有写过笔记。<br>选中文字 → 点「笔记」。' : '还没有标记。<br>选中正文任意一段，就能高亮或记笔记。'))}</div>`;
     return;
   }
 
@@ -2124,7 +2147,7 @@ function renderNotes() {
         <button class="note-del" data-del-mark="${m.id}" title="删除">✕</button>
         <div class="note-quote">${escapeHtml(m.text)}</div>
         ${m.note ? `<div class="note-mine">${escapeHtml(m.note)}</div>` : ''}
-        <div class="note-meta"><span>${fmtDate(m.createdAt)}</span>${m.kind && ai.TAG_NAMES[m.kind] ? '<span>' + ai.TAG_NAMES[m.kind] + '</span>' : (m.note ? '<span>笔记</span>' : '<span>标记</span>')}</div>
+        <div class="note-meta"><span>${fmtDate(m.createdAt)}</span>${m.person ? '<span>' + escapeHtml(m.person) + '</span>' : (m.kind && ai.TAG_NAMES[m.kind] ? '<span>' + ai.TAG_NAMES[m.kind] + '</span>' : (m.note ? '<span>笔记</span>' : '<span>标记</span>'))}</div>
       </div>`;
     } else {
       const n = it.data;

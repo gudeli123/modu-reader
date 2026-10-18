@@ -462,10 +462,10 @@ export function mdToHtml(md) {
 export const TAG_COLORS = { portrait: 'yellow', scene: 'blue', action: 'green', mood: 'pink', dialog: 'purple' };
 export const TAG_NAMES = { portrait: '人物', scene: '环境', action: '动作', mood: '神态心理', dialog: '对话衔接' };
 
-/** AI 版一键标记：让模型挑出可借鉴句子并按类别归类（只出 JSON，不改正文） */
+/** AI 版一键标记：让模型按“这段主要写的是谁”挑句归类（只出 JSON，不改正文） */
 export function promptAutoTag(book, chapter, text) {
   return [
-    { role: 'system', content: SYS + '\n7. 你现在是网文写作教练，专门帮作者从范文里挑出可以直接借鉴的句子。只输出 JSON。' },
+    { role: 'system', content: SYS + '\n7. 你现在是网文写作教练，专门帮作者从范文里挑出可以直接借鉴的句子，并按“这段主要描写的是哪个人物”归类。只输出 JSON。' },
     {
       role: 'user', content: `我在读${bookMeta(book)}
 当前章节：${chapter.title}
@@ -473,17 +473,15 @@ export function promptAutoTag(book, chapter, text) {
 【本章原文】
 ${text.slice(0, 11000)}
 
-请从这一章里挑出**最值得借鉴写作手法**的句子（必须是原文原句，不要改写），按下面 5 类归类，每类最多 4 句：
-- portrait（人物：外貌 / 衣着 / 形象）
-- scene（环境：场景 / 氛围 / 感官）
-- action（动作：有画面感的动作）
-- mood（神态心理：情绪 / 心理 / 神态）
-- dialog（对话衔接：对话句，或"话说/却说/只见/于是"等过渡转场）
+请从这一章里挑出**最值得借鉴写作手法**的句子（必须是原文原句，不要改写），并**按“这段主要描写的是哪个人物”归类**：
+- 无论它写的是情绪、动作、神态、外貌还是情节推进，都归到它**主要描写的那个人物**名下；
+- 同一个人物最多 4 句；本书其它人物每人也最多 3 句；
+- 若某句没有明确人物（纯环境 / 群像 / 无主语叙述），person 一律填“其他”；宁缺毋滥，不要凑数。
 
 **只输出一个 JSON 数组，不要任何解释，不要 Markdown 代码块**，例如：
-[{"kind":"scene","quote":"原文句子…"},{"kind":"action","quote":"…"}]
+[{"person":"人物名","quote":"原文句子…"},{"person":"另一个人物","quote":"…"}]
 
-要求：quote 与原文**逐字一致**，长度 8–80 字，不要跨段拼接；宁缺毋滥，不要凑数。` }
+要求：person 用原文里对该人物的称呼；quote 与原文**逐字一致**，长度 8–80 字，不要跨段拼接。` }
   ];
 }
 
@@ -500,11 +498,10 @@ export function parseAutoTag(reply) {
   const out = [];
   for (const it of arr) {
     if (!it || typeof it.quote !== 'string') continue;
-    const kind = String(it.kind || '').trim();
-    if (!TAG_COLORS[kind]) continue;
+    const person = String(it.person || '').trim() || '其他';
     const quote = it.quote.trim();
     if (quote.length < 4) continue;
-    out.push({ kind, color: TAG_COLORS[kind], quote });
+    out.push({ person, color: personColor(person), quote });
   }
   return out;
 }
