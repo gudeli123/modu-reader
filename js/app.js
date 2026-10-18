@@ -6,7 +6,7 @@
  * 改动指引：交互/流程 → 本文件；界面结构 → index.html + styles.css；分析/提示词 → ai.js；存储 → db.js。
  */
 import * as db from './db.js';
-import { parseFile, escapeHtml, cnToNum, readingTime, ocrPdf, splitChapters } from './parse.js';
+import { parseFile, escapeHtml, cnToNum, readingTime, ocrPdf, splitChapters, buildChapters, candidateLines } from './parse.js';
 import * as ai from './ai.js';
 import * as writer from './writer.js';
 import * as xdocx from './exportdocx.js';
@@ -282,6 +282,8 @@ async function openBook(id, opts = {}) {
   state.threads = null;
   state.threadsBookId = null;
   state._names = null;   // 换书时清空人物名缓存
+  state._tocUndo = null; state._tocDraft = null;   // 换书时清空「AI 整理目录」的暂存与撤销点
+  { const ub = $('#btnTocUndo'); if (ub) ub.hidden = true; }
   state.notes = state.notes || [];
 
   $('#welcome').hidden = true;
@@ -387,6 +389,121 @@ function renderTOC() {
 function cleanTitle(t) {
   return (t || '').replace(/\s+/g, ' ').trim() || '未命名章节';
 }
+
+/* ══════════ AI 整理目录 ══════════ */
+/**
+ * 本地规则分章不理想时，用模型重新识别章节：
+ *   候选标题行 → 分批交给模型判断真伪 → buildChapters 收口（去目录页重复、补卷首、标注前后置内容）
+ *   → 弹窗预览 → 用户确认后应用（可一键撤销）。
+ * 只改「目录结构」，不动原文；不满意取消即可，原目录不受影响。
+ */
+async function runAiToc() {
+  if (!state.book) return;
+  if (state.busy) { toast('正忙，稍等一下'); return; }
+  if (!ai.aiReady()) { toast('先到「设置 → 大模型」配置模型，才能用 AI 整理目录'); openSettings(); return; }
+
+  const btn = $('#btnAiToc');
+  const oldLabel = btn.textContent;
+  state.busy = true;
+  btn.disabled = true;
+  btn.textContent = '整理中…';
+  try {
+    const cands = candidateLines(state.content);
+    if (!cands.length) { toast('全文里没找到像章节标题的行'); return; }
+
+    const byId = new Map(cands.map((c) => [c.id, c]));
+    const BATCH = 240;
+    const picked = [];
+    for (let i = 0; i < cands.length; i += BATCH) {
+      const batch = cands.slice(i, i + BATCH);
+      const from = batch[0].id, to = batch[batch.length - 1].id;
+      btn.textContent = `整理中 ${Math.min(i + BATCH, cands.length)}/${cands.length}`;
+      const reply = await ai.askAI(ai.promptToc(state.book, batch, from, to), { temperature: 0, maxTokens: 4000 });
+      picked.push(...ai.parseTocReply(reply));
+    }
+
+    const seen = new Set();
+    const heads = [];
+    for (const p of picked) {
+      const c = byId.get(p.id);
+      if (!c || seen.has(p.id)) continue;
+      seen.add(p.id);
+      heads.push({ title: p.title || c.text, start: c.start });
+    }
+    if (!heads.length) { toast('AI 没找到明显的章节标题，目录保持原样'); return; }
+
+    const chapters = buildChapters(state.content, heads);
+    if (!chapters.length) { toast('整理结果为空，目录保持原样'); return; }
+
+    state._tocDraft = chapters;
+    state._tocUndo = state.book.chapters.slice();
+    openAiTocModal(state.book.chapters, chapters);
+  } catch (err) {
+    toast(aiExplainError(err), 4200);
+  } finally {
+    state.busy = false;
+    btn.disabled = false;
+    btn.textContent = oldLabel;
+  }
+}
+
+function openAiTocModal(oldChapters, newChapters) {
+  $('#aiTocInfo').textContent = `当前目录 ${oldChapters.length} 章 → AI 整理后 ${newChapters.length} 章。`
+    + '确认无误点「应用到目录」；不满意可直接取消，原目录不受影响。';
+  $('#aiTocPreview').innerHTML = newChapters.map((c, i) =>
+    `<div class="toct-preview-row"><span class="n">${i + 1}</span><span class="t">${escapeHtml(cleanTitle(c.title))}</span></div>`
+  ).join('');
+  $('#aiTocMask').hidden = false;
+}
+
+function closeAiTocModal() { $('#aiTocMask').hidden = true; }
+
+function updateTocMeta(n) {
+  const b = state.book;
+  $('#tocBookMeta').textContent = b.private
+    ? `私密书籍 · ${n} 章`
+    : [b.author, `${n} 章`, `${(b.charCount / 10000).toFixed(1)} 万字`, readingTime(b.charCount)].filter(Boolean).join(' · ');
+}
+
+async function applyAiToc() {
+  const chapters = state._tocDraft;
+  if (!chapters || !state.book) return closeAiTocModal();
+  state.book.chapters = chapters;
+  state.book.charCount = state.content.length;
+  await db.putBook(state.book);
+  const n = chapters.length;
+  $('#tocCount').textContent = n;
+  updateTocMeta(n);
+  state.chapter = Math.min(state.chapter, n - 1);
+  renderTOC();
+  renderReader(state.chapter, { silent: true });
+  closeAiTocModal();
+  const ub = $('#btnTocUndo'); if (ub) ub.hidden = !state._tocUndo;
+  toast(`目录已应用：共 ${n} 章`);
+}
+
+async function undoAiToc() {
+  if (!state._tocUndo || !state.book) return;
+  state.book.chapters = state._tocUndo;
+  state._tocUndo = null;
+  state._tocDraft = null;
+  await db.putBook(state.book);
+  const n = state.book.chapters.length;
+  $('#tocCount').textContent = n;
+  updateTocMeta(n);
+  state.chapter = Math.min(state.chapter, n - 1);
+  renderTOC();
+  renderReader(state.chapter, { silent: true });
+  const ub = $('#btnTocUndo'); if (ub) ub.hidden = true;
+  toast('已还原为整理前的目录');
+}
+
+$('#btnAiToc')?.addEventListener('click', runAiToc);
+$('#btnTocUndo')?.addEventListener('click', undoAiToc);
+$('#aiTocClose')?.addEventListener('click', closeAiTocModal);
+$('#aiTocCancel')?.addEventListener('click', closeAiTocModal);
+$('#btnAiTocApply')?.addEventListener('click', applyAiToc);
+$('#aiTocMask')?.addEventListener('click', (e) => { if (e.target.id === 'aiTocMask') closeAiTocModal(); });
 
 /* ══════════════════════ 阅读渲染 ══════════════════════ */
 function renderReader(idx, opts = {}) {
@@ -3827,12 +3944,12 @@ async function copyText(t) {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 2000) {
   const el = $('#toast');
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ms);
 }
 
 /* ══════════════════════ 键盘 ══════════════════════ */
