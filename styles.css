@@ -1986,6 +1986,19 @@ html[data-theme="night"] .modal-body { background: #1f2937; }
 }
 .toct-preview-row .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ══════════ 内置阅读字体（按需加载：默认黑体不下载，选「宋 / 楷」时才下，之后离线可用） ══════════
+   Source: Noto Serif SC（OFL 1.1）、ZCOOL XiaoWei（OFL 1.1），见 vendor/fonts/LICENSE-*.txt */
+@font-face {
+  font-family: "MODU Song";
+  src: url("vendor/fonts/noto-serif-sc-400.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "MODU Kai";
+  src: url("vendor/fonts/zcool-xiaowei-400.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+
 /* ══════════ 选段分析 ══════════ */
 .range-bar {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
