@@ -12,8 +12,8 @@
 <meta name="format-detection" content="telephone=no">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="stylesheet" href="styles.css?v=20">
-<link rel="stylesheet" href="styles-desk.css?v=20">
+<link rel="stylesheet" href="styles.css?v=21">
+<link rel="stylesheet" href="styles-desk.css?v=21">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
 </head>
 <body>
@@ -66,6 +66,8 @@
           <button class="mini-btn" id="btnBookFramework">拆书</button>
           <button class="mini-btn" id="btnChapterSummary">情节概括</button>
           <button class="mini-btn" id="btnRangeSelect">分析选段</button>
+          <button class="mini-btn" id="btnAiToc" title="本地识别不准时，用 AI 重新识别并修正目录">AI 整理</button>
+          <button class="mini-btn" id="btnTocUndo" title="还原为整理前的目录" hidden>撤销整理</button>
         </div>
         <div class="range-bar" id="rangeBar" hidden>
           <span class="range-bar-text" id="rangeBarText">点选起点章节</span>
@@ -456,6 +458,26 @@
     </div>
   </div>
 
+  <!-- ══════════ 弹窗：AI 整理目录（预览确认） ══════════ -->
+  <div class="modal-mask" id="aiTocMask" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <strong>AI 整理目录</strong>
+        <button class="icon-btn small" id="aiTocClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="set-desc" id="aiTocInfo"></p>
+        <div class="toc-preview" id="aiTocPreview"></div>
+      </div>
+      <div class="modal-foot">
+        <span class="outline-hint">应用后可点「撤销整理」一键还原</span>
+        <div class="spacer"></div>
+        <button class="btn-ghost" id="aiTocCancel">取消</button>
+        <button class="btn-primary" id="btnAiTocApply">应用到目录</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 笔记/框架 阅读抽屉 -->
   <div class="modal-mask" id="outlineMask" hidden>
     <div class="modal modal-wide">
@@ -477,6 +499,6 @@
 </div>
 
 <!-- vendor 库（jszip / mammoth / pdf.js）改为按需动态加载，首屏更快；加载逻辑见 js/parse.js -->
-<script type="module" src="js/app.js?v=20"></script>
+<script type="module" src="js/app.js?v=21"></script>
 </body>
 </html>
