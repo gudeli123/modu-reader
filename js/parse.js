@@ -233,10 +233,16 @@ async function parsePdf(file, onProgress) {
 /* ══════════ 章节切分 ══════════ */
 const CN_NUM = '零〇一二三四五六七八九十百千两';
 
-const RE_CN = new RegExp(`^第\\s*[${CN_NUM}\\d]{1,10}\\s*[章回节卷篇部集]`);
-const RE_EN = /^(CHAPTER|Chapter|chapter)\s+([IVXLCDM]{1,7}|\d{1,3})\b/;
-const RE_SPECIAL = /^(序章|序言|自序|代序|译序|总序|前言|引言|引子|楔子|开场白|尾声|后记|跋|附录|导论|导读|凡例|目录|终章|大结局|写在前面|出版说明)$/;
-const RE_SPECIAL2 = /^(序|跋|尾声|后记|附录)\s*[:：]?\s*.{0,14}$/;
+// 章标题：整行「第<数字><章/回/节/卷/篇/部/集>」+ 可选短标题，行尾收束（.{0,26}$）。
+// 行尾锚定 + 去句号，避免「第3章的内容很精彩，他读了三遍。」这类正文被误判成标题。
+const RE_CN = new RegExp(`^第\\s*[${CN_NUM}\\d]{1,10}\\s*[章回节卷篇部集].{0,26}$`);
+const RE_EN = /^(CHAPTER|Chapter|chapter)\s+([IVXLCDM]{1,7}|\d{1,4}).{0,26}$/;
+const RE_VOL = new RegExp(`^卷\\s*[${CN_NUM}\\d]{1,6}.{0,26}$`);   // 「卷一 风起」这类不带「第」的分卷
+const RE_SPECIAL = /^(序章|序言|自序|代序|译序|总序|序|前言|引言|引子|楔子|开场白|尾声|后记|跋|附录|导论|导读|凡例|目录|终章|大结局|番外|番外篇|写在前面|出版说明)$/;
+const RE_SPECIAL2 = /^(序|跋|尾声|后记|附录|番外|番外篇)[\s:：·、—\-]+.{1,14}$/;   // 必须带分隔符：避免「序幕缓缓拉开」「尾声响起」「后记里提到」被误判
+// 标题可能被 【】（）()《》 包裹，或带「正文 / VIP章节」等前缀
+const HEAD_WRAP = /[【】（）()\[\]《》「」『』]/g;
+const HEAD_PREFIX = /^(正文|最新章节|VIP章节|vip|免费|付费|作品相关)\s*[:：]?\s*/i;
 
 /* 前后置内容：不是正文，不参与节奏评分（否则"序言"会被当成水章）。 */
 const MATTER_OPEN = /^(楔子|引子|开场白|序幕)\s*$/;
@@ -274,10 +280,15 @@ export function cnToNum(s) {
 function isHeading(line) {
   const t = line.trim();
   if (!t || t.length > 46) return false;
-  if (RE_CN.test(t)) return true;
-  if (RE_EN.test(t)) return true;
-  if (RE_SPECIAL.test(t)) return true;
-  if (t.length <= 16 && RE_SPECIAL2.test(t)) return true;
+  if (t.includes('。')) return false;          // 标题不含句号；含句号的是句子
+  if (/[，；]/.test(t)) return false;           // 标题不含逗号/分号；含的是正文句子
+  const core = t.replace(HEAD_WRAP, '').replace(HEAD_PREFIX, '').trim();
+  if (!core) return false;
+  if (RE_CN.test(core)) return true;
+  if (RE_EN.test(core)) return true;
+  if (RE_VOL.test(core)) return true;
+  if (RE_SPECIAL.test(core)) return true;
+  if (t.length <= 16 && RE_SPECIAL2.test(core)) return true;
   return false;
 }
 
@@ -306,10 +317,19 @@ export function splitChapters(text) {
     });
   }
 
-  // 相邻标题过密（如目录页未去净）→ 合并
+  // 相邻标题过密 → 多半是书首「目录页」未去净（目录页标题与正文标题写法不一致时，上面的去重会漏掉它）
+  // 改为：只剔除密集块，保留真正分散的正文标题；若剔除后一个都不剩，再按老办法回落。
   if (heads.length >= 2) {
-    const dense = heads.filter((h, i) => i > 0 && h.start - heads[i - 1].start < 60);
-    if (dense.length > heads.length * 0.5) heads = heads.slice(0, 1);
+    const keep = heads.filter((h, i) => {
+      const gn = i + 1 < heads.length ? heads[i + 1].start - h.start : Infinity;
+      return gn >= 60;   // 只按“与下一标题的间距”判密：目录页里的行间距极小会被剔除，正文首章即便紧跟目录也能保住
+    });
+    if (keep.length >= 2) {
+      heads = keep;
+    } else {
+      const dense = heads.filter((h, i) => i > 0 && h.start - heads[i - 1].start < 60);
+      if (dense.length > heads.length * 0.5) heads = heads.slice(0, 1);
+    }
   }
 
   const chapters = [];
