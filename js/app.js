@@ -795,8 +795,13 @@ const saveProgress = debounce(async () => {
   if (card) card.querySelector('.book-progress i').style.width = Math.max(1.5, state.book.progress.percent * 100) + '%';
 }, 600);
 
+let _progRaf = 0;
+function scheduleProgress() {
+  if (_progRaf) return;
+  _progRaf = requestAnimationFrame(() => { _progRaf = 0; updateProgress(); });
+}
 $('#readerScroll').addEventListener('scroll', () => {
-  updateProgress();
+  scheduleProgress();   // 每帧最多算一次进度，避免滚动时反复触发布局计算（卡顿主因之一）
   saveProgress();
 }, { passive: true });
 
@@ -2399,7 +2404,7 @@ function renderReuse(key = reuseRange) {
   box.innerHTML = ai.reuseHTML(r, key);
 }
 
-function showWbcheck() {
+async function showWbcheck() {
   if (!state.book) return;
   $('#outlineMask').hidden = false;
   $('#outlineTitle').textContent = `进阶体检 · ${state.book.title}`;
@@ -2407,6 +2412,9 @@ function showWbcheck() {
   const body = $('#outlineBody');
   body.scrollTop = 0;
   const intro = localStorage.getItem('modu.intro.' + state.book.id) || '';
+  // 体检要同步遍历全书，先画出提示并让出主线程，避免“点了没反应”的卡顿感
+  body.innerHTML = '<p class="outline-loading">正在体检（本地规则，书越大越慢）…</p>';
+  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   body.innerHTML = ai.wbcheckHTML(state.book, state.content, state.books);
   const ta = body.querySelector('#wbIntroInput');
   if (ta) ta.value = intro;
@@ -2419,7 +2427,7 @@ function showWbcheck() {
 
 async function showOutline(type, question, force = false) {
   if (!state.book) return;
-  if (type === 'wbcheck') { showWbcheck(); return; }
+  if (type === 'wbcheck') { await showWbcheck(); return; }
   const isChapter = type === 'chapter';
   const isWriting = type === 'writing';
   const isSummary = type === 'summary';
@@ -2608,6 +2616,9 @@ async function showOutline(type, question, force = false) {
   }
 
   // 拆书：核心梗 → 结构层级 → 情节 → 人物 → 写法
+  // 下面几段 ai.* 会同步遍历全书，先画出提示并让出主线程，避免卡顿
+  body.innerHTML = '<p class="outline-loading">正在拆书（本地规则，书越大越慢）…</p>';
+  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
   body.innerHTML = `
     <div class="pl-nav">
       <a data-wjump="secCore">核心梗</a><i>·</i>
