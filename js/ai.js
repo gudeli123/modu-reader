@@ -205,6 +205,49 @@ export async function continueAI(prevMessages, prevText, { onDelta, maxTokens = 
   return askAI(messages, { onDelta, maxTokens });
 }
 
+/* ══════════ AI 整理目录 ══════════ */
+/**
+ * 生成「整理目录」的提示词。rows 为一批候选行：[{ id, text }]，from/to 为这批的编号范围。
+ * 让模型只挑出真正的章节标题行、并回填「编号|标题」——这样才能把模型结果精确映射回原文偏移。
+ */
+export function promptToc(book, rows, from, to) {
+  const list = rows.map((r) => `${r.id}\t${r.text}`).join('\n');
+  const sys = [
+    '你是中文小说的目录编辑。用户会给你一本书的「候选行」清单，每行格式为「编号<TAB>文本」。',
+    '这些行里混着好几种东西：真正的章节标题（如「第一章 风起」「第十二回 惊变」「卷三 烽火」「序章」「楔子」「尾声」「番外」「Chapter 5」）、',
+    '正文里的句子、书首目录页里成批罗列的条目、以及页眉/页脚等噪声。',
+    '你的唯一任务：判断哪些行是真正的「章节标题」。判定要点：',
+    '① 书首目录页里连续成批出现的条目不是正文标题，不要选（真正的标题在正文里另有一份）；',
+    '② 只挑标题行，不要挑正文句子；③ 拿不准时宁可不选，也不要选错。',
+    '输出格式：每行一条，写成「编号|标题」，标题取行内文本去掉多余空格即可；按编号升序；',
+    '不要输出任何解释、编号外的文字或空行。'
+  ].join('\n');
+  const user = [
+    `书名：${book.title || '未命名'}（约 ${Math.round((book.charCount || 0) / 10000)} 万字）`,
+    `下面是候选行（编号 ${from}–${to}）：`,
+    list,
+    '',
+    '请只输出真正章节标题行的「编号|标题」。'
+  ].join('\n');
+  return [
+    { role: 'system', content: sys },
+    { role: 'user', content: user }
+  ];
+}
+
+/** 解析模型回填的「编号|标题」；容错多种分隔符，无法解析的行直接忽略。 */
+export function parseTocReply(text) {
+  const out = [];
+  for (const line of String(text || '').split('\n')) {
+    const m = line.trim().match(/^(\d{1,6})\s*[|｜、.。:：\-—]?\s*(.+)$/);
+    if (!m) continue;
+    const id = parseInt(m[1], 10);
+    const title = m[2].trim().replace(/^[「『"'“”]+|[」』"'“”]+$/g, '').trim();
+    if (id > 0 && title) out.push({ id, title });
+  }
+  return out;
+}
+
 export async function testAI() {
   const txt = await askAI(
     [{ role: 'system', content: '只回答两个字：可用' }, { role: 'user', content: '测试' }],
