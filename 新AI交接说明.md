@@ -108,6 +108,8 @@
   `sw.js` 的 `CACHE` 为 `modu-reader-v22`、`vendor/fonts/noto-serif-sc-400.woff2` HTTP 200 且 1,506,904 字节完整；
   本交接包与远端 `main` 的 31 个文件中有 29 个 blob sha 完全一致。
   → 原「v22 尚未推送上线」的判断**已过期**，不要再按那个差集重推。
+  **复核方式**：`python3 <skill>/scripts/publish.py <项目根>`（默认 dry-run，只列差异不推送），
+  以它按 blob sha 算出的结果为准，不要以本文档的文字描述为准。
 - 待办：
   1. （可选）把 v22 推上线：需用户提供**新的、最小权限**的 Token（仅 `modu-reader` 的 Contents 读写）。
   2. 用户此前对"水章/序言第 3 项"的确认**未回复**（可能指"灵敏度三档"或"批注全量列表"），待其确认后补做。
