@@ -158,7 +158,7 @@ async function init() {
 
 /* ══════════════════════ 阅读偏好 ══════════════════════ */
 const PREF_KEY = 'modu.prefs';
-let prefs = { size: 18, lh: 1.9, theme: 'paper', family: 'serif', indent: true, width: 700 };
+let prefs = { size: 18, lh: 1.9, theme: 'paper', family: 'serif', indent: true, width: 700, rate: 1, voiceURI: '' };
 
 function loadPrefs() {
   try {
@@ -186,6 +186,7 @@ function applyPrefs() {
   $$('#fontSeg button').forEach(b => b.classList.toggle('on', b.dataset.fontfamily === prefs.family));
   $$('#themeSeg button').forEach(b => b.classList.toggle('on', b.dataset.theme === prefs.theme));
   $('#indentSwitch').classList.toggle('on', prefs.indent);
+  { const sr = $('#speakRate'); if (sr) sr.value = prefs.rate || 1; }
 }
 const applyPrefsDebounced = debounce(applyPrefs, 80);
 
@@ -3368,19 +3369,21 @@ $('#btnOutlineWord').addEventListener('click', async () => {
 });
 
 /* ══════════════════════ 朗读 ══════════════════════ */
-let _speaking = false;
 let _speakTimer = null;
+let _speakQueue = [];
+let _speakVoice = null;
 
 function stopSpeak() {
   if ('speechSynthesis' in window) speechSynthesis.cancel();
   _speaking = false;
+  _speakQueue = [];
   if (_speakTimer) { clearInterval(_speakTimer); _speakTimer = null; }
   if ($('#btnSpeak')) $('#btnSpeak').textContent = '读这一章';
 }
 
 function pickZhVoice(voices) {
   return voices.find(v => /^zh/i.test(v.lang || ''))
-    || voices.find(v => /Chinese|中文|普通话|国语|Mandarin|Wen|Xiaoxiao|Huihui/i.test(v.name || ''))
+    || voices.find(v => /Chinese|中文|普通话|国语|Mandarin|Xiaoxiao|Huihui|Yun|Wen/i.test(v.name || ''))
     || null;
 }
 
@@ -3392,37 +3395,89 @@ function whenVoicesReady(cb, tries = 0) {
   setTimeout(() => whenVoicesReady(cb, tries + 1), 200);
 }
 
+function resolveVoice(voices) {
+  const uri = prefs.voiceURI;
+  if (uri) { const v = voices.find(x => (x.voiceURI || x.name) === uri); if (v) return v; }
+  return pickZhVoice(voices);
+}
+
+/* 回填「语音」下拉：优先列中文语音；选「自动」则程序挑最好的中文音色 */
+function fillVoiceSel(voices) {
+  const sel = $('#voiceSel'); if (!sel) return;
+  const zh = voices.filter(v => /^zh/i.test(v.lang || '') || /Chinese|中文|普通话|国语|Mandarin|Xiaoxiao|Huihui|Yun|Wen/i.test(v.name || ''));
+  const list = zh.length ? zh : voices;
+  sel.innerHTML = '';
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = list.length ? '自动（推荐）' : '无可用语音';
+  sel.appendChild(auto);
+  for (const v of list) {
+    const o = document.createElement('option');
+    o.value = v.voiceURI || v.name;
+    o.textContent = v.name + '（' + v.lang + '）';
+    sel.appendChild(o);
+  }
+  sel.value = prefs.voiceURI || '';
+}
+
+/* 按句末标点断句，并把过短句并起来 —— 让朗读有自然停顿，不再一口气读到底（节奏怪的主因） */
+function toSpeechSegments(raw) {
+  const sents = [];
+  let buf = '';
+  for (const ch of raw) {
+    buf += ch;
+    if ('。！？!?；;…'.indexOf(ch) >= 0) { sents.push(buf); buf = ''; }
+  }
+  if (buf.trim()) sents.push(buf);
+  const segs = [];
+  let cur = '';
+  for (const s of sents) {
+    if (cur && (cur.length + s.length) > 110) { segs.push(cur); cur = s; }
+    else cur += s;
+  }
+  if (cur.trim()) segs.push(cur);
+  return segs.map(s => s.trim()).filter(Boolean);
+}
+
+/* 逐句排队朗读；每句之间留 170ms 停顿 */
+function speakNext() {
+  if (!_speaking) return;
+  if (!_speakQueue.length) { stopSpeak(); return; }
+  const seg = _speakQueue.shift();
+  const u = new SpeechSynthesisUtterance(seg);
+  if (_speakVoice) { u.voice = _speakVoice; u.lang = _speakVoice.lang; } else { u.lang = 'zh-CN'; }
+  u.rate = prefs.rate || 1;
+  u.onend = () => { if (_speaking) setTimeout(speakNext, 170); };
+  u.onerror = () => { if (_speaking) setTimeout(speakNext, 120); };
+  try { speechSynthesis.speak(u); } catch { if (_speaking) setTimeout(speakNext, 120); }
+}
+
 $('#btnSpeak').addEventListener('click', () => {
   if (!('speechSynthesis' in window)) return toast('这个浏览器不支持朗读');
   if (_speaking) { stopSpeak(); return; }
   if (!state.book) return;
 
   const ch = state.book.chapters[state.chapter];
-  const text = state.content.slice(ch.start, ch.end).replace(/\s+/g, '');
-  if (!text.trim()) return;
+  // 保留句子结构（只压空白），交给 toSpeechSegments 断句，这样才有自然停顿
+  const raw = state.content.slice(ch.start, ch.end).replace(/[ \t]+/g, ' ').replace(/\n+/g, ' ').trim();
+  if (!raw) return;
+  const segs = toSpeechSegments(raw);
+  if (!segs.length) return;
 
-  // 先在用户手势内进入“朗读中”，避免二次点击；再等语音列表就绪
   _speaking = true;
   $('#btnSpeak').textContent = '停止';
   toast('正在准备朗读…');
+  try { speechSynthesis.cancel(); } catch { }
 
   whenVoicesReady((voices) => {
     if (!_speaking) return;
-    const zh = pickZhVoice(voices);
-    const u = new SpeechSynthesisUtterance(text.slice(0, 4200));
-    if (zh) u.voice = zh;
-    u.lang = (zh && zh.lang) || 'zh-CN';
-    u.rate = 1;
-    u.onend = stopSpeak;
-    u.onerror = () => { stopSpeak(); toast('朗读启动失败，可换 Chrome 打开或安装中文语音包', 3200); };
+    _speakVoice = resolveVoice(voices);
+    _speakQueue = segs.slice();
+    if (!_speakVoice) toast('这台设备没找到中文语音，可能读不出声；可在系统设置里装中文语音包', 3600);
+    else toast('开始朗读');
+    speakNext();
 
-    let started = false;
-    try { speechSynthesis.speak(u); started = true; } catch { }
-    if (!started) { stopSpeak(); return toast('朗读启动失败'); }
-
-    toast(zh ? '开始朗读' : '这台设备没找到中文语音，可能读不出声；可在系统设置里安装中文语音包', 3600);
-
-    // Chrome 长文朗读到一半会暂停的已知问题：定时 resume 保活
+    // 部分浏览器朗读到一半会暂停：定时 resume 保活
     if (_speakTimer) clearInterval(_speakTimer);
     _speakTimer = setInterval(() => {
       if (!_speaking) { clearInterval(_speakTimer); _speakTimer = null; return; }
@@ -3430,6 +3485,15 @@ $('#btnSpeak').addEventListener('click', () => {
     }, 8000);
   });
 });
+
+/* 语音下拉：就绪后回填，切换后记住选择 */
+if ('speechSynthesis' in window) {
+  const refreshVoices = () => fillVoiceSel(speechSynthesis.getVoices());
+  refreshVoices();
+  speechSynthesis.onvoiceschanged = refreshVoices;
+}
+$('#voiceSel') && $('#voiceSel').addEventListener('change', (e) => { prefs.voiceURI = e.target.value || ''; savePrefs(); });
+$('#speakRate') && $('#speakRate').addEventListener('input', (e) => { prefs.rate = +e.target.value || 1; savePrefs(); });
 
 /* ══════════════════════ 排版 popover ══════════════════════ */
 $('#btnType').addEventListener('click', (e) => {
