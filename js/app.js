@@ -202,28 +202,36 @@ function renderShelf() {
     const pct = b.progress?.percent ? Math.round(b.progress.percent * 100) : 0;
     const card = document.createElement('div');
     card.className = 'book-card' + (state.book?.id === b.id ? ' active' : '');
+    const shown = b.private ? '无' : escapeHtml(b.title);
     card.innerHTML = `
-      <div class="book-spine" style="background:${spineColor(b)}"></div>
+      <div class="book-spine" style="background:${b.private ? '#6b6b6b' : spineColor(b)}"></div>
       <div class="book-body">
-        <div class="book-title" title="${escapeHtml(b.title)}">${escapeHtml(b.title)}</div>
+        <div class="book-title" title="${b.private ? '无' : escapeHtml(b.title)}"${b.private ? ' style="color:var(--ink-3);font-style:italic"' : ''}>${shown}</div>
         <div class="book-meta">
-          ${b.kind === 'draft' ? '<span class="draft-tag">我的稿</span>' : ''}
+          ${b.private
+            ? '<span>—</span>'
+            : `${b.kind === 'draft' ? '<span class="draft-tag">我的稿</span>' : ''}
           <span>${(b.format || '').toUpperCase()}</span>
           <span>·</span>
           <span>${pct}%</span>
-          ${b.author ? `<span>·</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(b.author)}</span>` : ''}
+          ${b.author ? `<span>·</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(b.author)}</span>` : ''}`}
+          <button class="book-lock" title="${b.private ? '取消隐私' : '设为隐私'}" style="margin-left:auto;border:none;background:none;cursor:pointer;font-size:11px;padding:0 2px;color:var(--ink-3)">${b.private ? '🔒' : '🔓'}</button>
         </div>
         <div class="book-progress"><i style="width:${Math.max(pct, 1.5)}%"></i></div>
       </div>
       <button class="book-del" title="移除">✕</button>`;
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.book-del')) return;
+      if (e.target.closest('.book-del') || e.target.closest('.book-lock')) return;
       openBook(b.id);
       $('#sidebar').classList.remove('open');
     });
+    card.querySelector('.book-lock').addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePrivate(b);
+    });
     card.querySelector('.book-del').addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm(`从书架移除《${b.title}》？\n该书的标记和笔记也会一并删除。`)) return;
+      if (!confirm(`从书架移除《${b.private ? '这本私密书籍' : b.title}》？\n该书的标记和笔记也会一并删除。`)) return;
       await db.removeBook(b.id);
       if (state.book?.id === b.id) { state.book = null; showWelcome(); }
       await db.setKV('lastBook', null);
@@ -232,6 +240,24 @@ function renderShelf() {
     });
     shelf.appendChild(card);
   }
+}
+
+/* ══════════════════════ 隐私模式 ══════════════════════ */
+function dispTitle(b) { return b && b.private ? '无' : (b ? b.title : ''); }
+
+async function togglePrivate(b) {
+  const nb = { ...b, private: !b.private };
+  await db.putBook(nb);
+  const i = state.books.findIndex(x => x.id === b.id);
+  if (i >= 0) state.books[i] = nb;
+  if (state.book && state.book.id === b.id) {
+    state.book = nb;
+    const ch = state.book.chapters[state.chapter];
+    if (ch) $('#topbarTitle').textContent = `${dispTitle(nb)} · ${cleanTitle(ch.title)}`;
+    $('#tocBookTitle').textContent = dispTitle(nb);
+  }
+  renderShelf();
+  toast(nb.private ? '已设为隐私书籍（书架与顶栏隐藏书名）' : '已取消隐私模式');
 }
 
 function spineColor(b) {
@@ -261,10 +287,12 @@ async function openBook(id, opts = {}) {
   $('#readerWrap').hidden = false;
   $('#shelfView').hidden = true;
   $('#tocView').hidden = false;
-  $('#tocBookTitle').textContent = book.title;
-  $('#tocBookMeta').textContent = [
-    book.author, `${book.chapters.length} 章`, `${(book.charCount / 10000).toFixed(1)} 万字`, readingTime(book.charCount)
-  ].filter(Boolean).join(' · ');
+  $('#tocBookTitle').textContent = dispTitle(book);
+  $('#tocBookMeta').textContent = book.private
+    ? `私密书籍 · ${book.chapters.length} 章`
+    : [
+        book.author, `${book.chapters.length} 章`, `${(book.charCount / 10000).toFixed(1)} 万字`, readingTime(book.charCount)
+      ].filter(Boolean).join(' · ');
   const _nc = $('#bookNoteCount'); if (_nc) _nc.textContent = state.marks.length + state.notes.length;
   $('#btnBookFramework').textContent = '拆书';
 
@@ -428,7 +456,7 @@ function renderReader(idx, opts = {}) {
   // 导航按钮
   $('#btnPrevChapter').disabled = idx === 0;
   $('#btnNextChapter').disabled = idx === state.book.chapters.length - 1;
-  $('#topbarTitle').textContent = `${state.book.title} · ${cleanTitle(ch.title)}`;
+  $('#topbarTitle').textContent = `${dispTitle(state.book)} · ${cleanTitle(ch.title)}`;
 
   // 目录高亮
   $$('#tocList .toc-item').forEach(el => el.classList.toggle('active', +el.dataset.i === idx));
@@ -465,6 +493,161 @@ function toggleInline() {
   const ib = $('#btnInline'); if (ib) ib.classList.toggle('on', inlineMode);
   renderReader(state.chapter);
 }
+
+/* ══════════ 一键标记本章 ══════════ */
+// 把若干条目（含全书/局部偏移或原文 quote）落成标记；chapterIndex 指定所属章
+async function applyChapterTags(chapterIndex, ch, items, opts = {}) {
+  const ranges = state.marks.map(m => ({ s: m.start, e: m.end }));
+  const overlap = (s, e) => ranges.some(r => s < r.e && r.s < e);
+  let added = 0;
+  for (const it of items) {
+    let s = -1, e = -1;
+    if (it.start != null) {
+      s = ch.start + it.start; e = ch.start + it.end;
+    } else if (it.quote) {
+      const pos = state.content.indexOf(it.quote, ch.start);
+      if (pos >= ch.start && pos + it.quote.length <= ch.end) { s = pos; e = pos + it.quote.length; }
+    }
+    if (s < 0 || e <= s) continue;
+    if (overlap(s, e)) continue;
+    const m = {
+      id: db.uid(), bookId: state.book.id, chapterIndex,
+      start: s, end: e, text: state.content.slice(s, e),
+      color: it.color, kind: it.kind, note: '', createdAt: Date.now()
+    };
+    await db.putMark(m);
+    state.marks.push(m);
+    ranges.push({ s, e });
+    added++;
+  }
+  if (added && !opts.silent) {
+    state.marks.sort((a, b) => a.start - b.start);
+    renderReader(state.chapter, { ratio: currentRatio(), silent: true });
+    updateBookNoteCount();
+    renderNotes();
+  }
+  return added;
+}
+
+function localChapterTags(txt) {
+  try {
+    return ai.autoTagChapter(txt).map(t => ({ kind: t.kind, color: t.color, quote: t.text, start: t.start, end: t.end }));
+  } catch (e) { return []; }
+}
+
+async function autoTagCurrentChapter() {
+  if (!state.book) return;
+  const ch = state.book.chapters[state.chapter];
+  if (!ch) return;
+  const txt = state.content.slice(ch.start, ch.end);
+  const btn = $('#btnAutoTag');
+
+  // 1) 已配置 AI：让模型判断（更准，耗 token）
+  if (ai.aiReady()) {
+    if (btn) { btn.disabled = true; btn.classList.add('on'); }
+    toast('AI 正在读本章，挑可借鉴的句子…');
+    let acc = '';
+    try {
+      await ai.askAI(ai.promptAutoTag(state.book, ch, txt), {
+        maxTokens: 1500,
+        onDelta: (d) => { acc += d; }
+      });
+    } catch (e) {
+      toast('AI 标记失败：' + e.message);
+    }
+    let items = ai.parseAutoTag(acc);
+    if (!items.length) { toast('AI 没给出可用结果，改用本地规则'); items = localChapterTags(txt); }
+    if (btn) { btn.disabled = false; btn.classList.remove('on'); }
+    if (!items.length) { toast('本章没找到可借鉴的文段'); return; }
+    const added = await applyChapterTags(state.chapter, ch, items);
+    toast(added ? `已标出 ${added} 处可借鉴文段（AI 判断）` : '本章已标记过，无新增');
+    return;
+  }
+
+  // 2) 未配置 AI：本地规则兜底
+  const items = localChapterTags(txt);
+  if (!items.length) { toast('本章没找到可借鉴的文段（在「设置」配置 AI 后更准）'); return; }
+  const added = await applyChapterTags(state.chapter, ch, items);
+  toast(added ? `已标出 ${added} 处可借鉴文段（本地规则）` : '本章已标记过，无新增');
+}
+
+$('#btnAutoTag')?.addEventListener('click', autoTagCurrentChapter);
+
+/* ── 清除本章自动标记 ── */
+async function clearChapterTags() {
+  if (!state.book) return;
+  const ch = state.book.chapters[state.chapter];
+  if (!ch) return;
+  const targets = state.marks.filter(m => m.kind && m.start >= ch.start && m.start < ch.end);
+  if (!targets.length) { toast('本章没有自动标记'); return; }
+  if (!confirm(`清除本章的 ${targets.length} 处自动标记？`)) return;
+  for (const m of targets) await db.deleteMark(m.id);
+  const ids = new Set(targets.map(m => m.id));
+  state.marks = state.marks.filter(m => !ids.has(m.id));
+  renderReader(state.chapter, { ratio: currentRatio(), silent: true });
+  updateBookNoteCount();
+  renderNotes();
+  toast(`已清除 ${targets.length} 处`);
+}
+
+$('#btnClearChapterTags')?.addEventListener('click', clearChapterTags);
+
+/* ── 批量 AI 标记（跨章） ── */
+async function batchTagByAI() {
+  if (!state.book) return;
+  if (!ai.aiReady()) { toast('请先在「设置」配置 AI'); return; }
+  const chs = state.book.chapters;
+  if (!chs.length) return;
+  if (!confirm(`将对全书 ${chs.length} 章逐一用 AI 标记。\n耗时较长、会消耗较多 token，期间请勿关闭页面。继续？`)) return;
+  const btn = $('#btnBatchTag');
+  if (btn) btn.disabled = true;
+  let total = 0;
+  for (let i = 0; i < chs.length; i++) {
+    if (btn) btn.textContent = `${i + 1}/${chs.length}`;
+    const ch = chs[i];
+    const txt = state.content.slice(ch.start, ch.end);
+    let acc = '';
+    try {
+      await ai.askAI(ai.promptAutoTag(state.book, ch, txt), { maxTokens: 1500, onDelta: (d) => { acc += d; } });
+    } catch (e) { continue; }
+    const items = ai.parseAutoTag(acc);
+    if (items.length) total += await applyChapterTags(i, ch, items, { silent: true });
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '批量标记'; }
+  state.marks.sort((a, b) => a.start - b.start);
+  renderReader(state.chapter, { ratio: currentRatio(), silent: true });
+  updateBookNoteCount();
+  renderNotes();
+  toast(`全书批量标记完成，共新增 ${total} 处`);
+}
+
+$('#btnBatchTag')?.addEventListener('click', batchTagByAI);
+
+/* ── 把自动标记收进素材库 ── */
+const TAG_TO_MAT = { portrait: 'mix', scene: 'mood', action: 'action', mood: 'face', dialog: 'beat' };
+$('#btnTagsToMaterial')?.addEventListener('click', async () => {
+  if (!state.book) return;
+  const f = state.noteFilter;
+  const kind = f.startsWith('kind:') ? f.slice(5) : null;
+  const marks = state.marks.filter(m => m.kind && (!kind || m.kind === kind));
+  if (!marks.length) { toast('没有可收的自动标记（可先在筛选栏选一个类别）'); return; }
+  const existing = await db.listMaterials();
+  const have = new Set(existing.map(x => (x.text || '').trim()));
+  let n = 0;
+  for (const m of marks) {
+    const t = (m.text || '').trim();
+    if (!t || have.has(t)) continue;
+    await db.putMaterial({
+      id: db.uid(), text: t, kind: TAG_TO_MAT[m.kind] || 'mix',
+      chapter: state.book.chapters[m.chapterIndex]?.title || '',
+      bookId: state.book.id, bookTitle: state.book.title,
+      at: m.start, createdAt: Date.now()
+    });
+    have.add(t);
+    n++;
+  }
+  toast(n ? `已把 ${n} 条收进素材库` : '这些句子已在素材库里了');
+});
 
 let inlineTip = null;
 function showInlineTip(el) {
@@ -1898,24 +2081,32 @@ function renderNotes() {
   if (!state.book) return;
   const box = $('#notesList');
   const f = state.noteFilter;
+  const kindFilter = f.startsWith('kind:') ? f.slice(5) : null;
 
   let items = [];
-  if (f !== 'ai') {
+  if (kindFilter) {
     for (const m of state.marks) {
-      if (f === 'note' && !m.note) continue;
+      if (m.kind !== kindFilter) continue;
       items.push({ kind: 'mark', at: m.start, chapterIndex: chapterAt(m.start).index, data: m });
     }
-  }
-  if (f !== 'highlight') {
-    for (const n of state.notes) {
-      if (f === 'ai' && n.kind !== 'ai') continue;
-      items.push({ kind: 'note', at: 0, chapterIndex: n.chapterIndex, data: n });
+  } else {
+    if (f !== 'ai') {
+      for (const m of state.marks) {
+        if (f === 'note' && !m.note) continue;
+        items.push({ kind: 'mark', at: m.start, chapterIndex: chapterAt(m.start).index, data: m });
+      }
+    }
+    if (f !== 'highlight') {
+      for (const n of state.notes) {
+        if (f === 'ai' && n.kind !== 'ai') continue;
+        items.push({ kind: 'note', at: 0, chapterIndex: n.chapterIndex, data: n });
+      }
     }
   }
   items.sort((a, b) => a.chapterIndex - b.chapterIndex || a.at - b.at);
 
   if (!items.length) {
-    box.innerHTML = `<div class="notes-empty">${f === 'note' ? '还没有写过笔记。<br>选中文字 → 点「笔记」。' : '还没有标记。<br>选中正文任意一段，就能高亮或记笔记。'}</div>`;
+    box.innerHTML = `<div class="notes-empty">${kindFilter ? '这一类还没有标记。<br>点顶栏「一键标记」自动标出本章可借鉴的文段。' : (f === 'note' ? '还没有写过笔记。<br>选中文字 → 点「笔记」。' : '还没有标记。<br>选中正文任意一段，就能高亮或记笔记。')}</div>`;
     return;
   }
 
@@ -1933,7 +2124,7 @@ function renderNotes() {
         <button class="note-del" data-del-mark="${m.id}" title="删除">✕</button>
         <div class="note-quote">${escapeHtml(m.text)}</div>
         ${m.note ? `<div class="note-mine">${escapeHtml(m.note)}</div>` : ''}
-        <div class="note-meta"><span>${fmtDate(m.createdAt)}</span>${m.note ? '<span>笔记</span>' : '<span>标记</span>'}</div>
+        <div class="note-meta"><span>${fmtDate(m.createdAt)}</span>${m.kind && ai.TAG_NAMES[m.kind] ? '<span>' + ai.TAG_NAMES[m.kind] + '</span>' : (m.note ? '<span>笔记</span>' : '<span>标记</span>')}</div>
       </div>`;
     } else {
       const n = it.data;

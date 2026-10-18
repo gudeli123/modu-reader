@@ -458,6 +458,123 @@ export function mdToHtml(md) {
   return html;
 }
 
+/* ══════════ 一键标记：自动挑出「可借鉴写作」的文段 ══════════ */
+export const TAG_COLORS = { portrait: 'yellow', scene: 'blue', action: 'green', mood: 'pink', dialog: 'purple' };
+export const TAG_NAMES = { portrait: '人物', scene: '环境', action: '动作', mood: '神态心理', dialog: '对话衔接' };
+
+/** AI 版一键标记：让模型挑出可借鉴句子并按类别归类（只出 JSON，不改正文） */
+export function promptAutoTag(book, chapter, text) {
+  return [
+    { role: 'system', content: SYS + '\n7. 你现在是网文写作教练，专门帮作者从范文里挑出可以直接借鉴的句子。只输出 JSON。' },
+    {
+      role: 'user', content: `我在读${bookMeta(book)}
+当前章节：${chapter.title}
+
+【本章原文】
+${text.slice(0, 11000)}
+
+请从这一章里挑出**最值得借鉴写作手法**的句子（必须是原文原句，不要改写），按下面 5 类归类，每类最多 4 句：
+- portrait（人物：外貌 / 衣着 / 形象）
+- scene（环境：场景 / 氛围 / 感官）
+- action（动作：有画面感的动作）
+- mood（神态心理：情绪 / 心理 / 神态）
+- dialog（对话衔接：对话句，或"话说/却说/只见/于是"等过渡转场）
+
+**只输出一个 JSON 数组，不要任何解释，不要 Markdown 代码块**，例如：
+[{"kind":"scene","quote":"原文句子…"},{"kind":"action","quote":"…"}]
+
+要求：quote 与原文**逐字一致**，长度 8–80 字，不要跨段拼接；宁缺毋滥，不要凑数。` }
+  ];
+}
+
+/** 解析模型返回的 JSON（带代码块 / 多余文字兜底） */
+export function parseAutoTag(reply) {
+  if (!reply) return [];
+  let s = String(reply).trim();
+  s = s.replace(/^```[a-zA-Z]*\s*/, '').replace(/```\s*$/, '').trim();
+  const a = s.indexOf('['), b = s.lastIndexOf(']');
+  if (a < 0 || b < 0 || b < a) return [];
+  let arr;
+  try { arr = JSON.parse(s.slice(a, b + 1)); } catch (e) { return []; }
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const it of arr) {
+    if (!it || typeof it.quote !== 'string') continue;
+    const kind = String(it.kind || '').trim();
+    if (!TAG_COLORS[kind]) continue;
+    const quote = it.quote.trim();
+    if (quote.length < 4) continue;
+    out.push({ kind, color: TAG_COLORS[kind], quote });
+  }
+  return out;
+}
+
+const TAG_WORDS = {
+  portrait: ['眉', '眼', '眸', '脸', '脸颊', '唇', '鬓', '发髻', '身材', '姿', '容貌', '神色', '仪态', '衣', '袍', '衫', '裙', '袄', '冠', '巾', '面貌', '容颜', '面庞', '腮', '颈', '手指', '眉目', '眉眼', '目光', '五官'],
+  scene: ['天', '云', '月', '日', '星', '风', '雨', '雪', '霜', '露', '山', '河水', '江', '湖', '海', '树林', '花', '草', '街', '巷', '屋', '院', '窗', '门', '灯', '光影', '夜色', '暮色', '晨', '雾', '烟', '炉', '帐', '檐', '庭院', '廊', '桥', '舟', '马', '鸟', '月色', '风声', '气息'],
+  action: ['走', '跑', '奔', '跳', '跃', '扑', '抓', '握', '推', '拉', '抬', '低', '回', '转', '掠', '闪', '踉跄', '起身', '坐下', '点头', '摇头', '摆手', '伸手', '转身', '皱眉', '抿嘴', '咬', '掷', '挥', '掀', '拽', '扶', '搀', '跪', '拂', '拾', '递'],
+  mood: ['笑', '哭', '怒', '喜', '悲', '惊', '慌', '惧', '羞', '恼', '怔', '愣', '诧', '暗想', '心中', '心头', '心神', '疑惑', '酸', '涩', '暖意', '寒意', '叹', '沉默', '沉吟', '踌躇', '犹豫', '忐忑', '怅然', '莞尔', '苦笑', '冷笑'],
+  dialog: ['说道', '问道', '答道', '笑道', '喊道', '叫道', '喝', '嘟囔', '应道', '开口', '低声', '高声', '插嘴', '道：', '道:']
+};
+const TAG_LINK = ['话说', '却说', '只见', '于是', '然而', '不多时', '半晌', '片刻', '良久', '须臾', '俄而', '随即', '紧接着', '转眼', '少顷', '自此', '从此', '谁知', '岂料', '原来'];
+const TAG_MAX = { portrait: 3, scene: 3, action: 4, mood: 3, dialog: 4 };
+
+/**
+ * 纯本地规则：按句切分，对每句做类别打分，挑出各类别最值得借鉴的句子。
+ * 返回 [{ start, end, kind, color, text }]，start/end 为相对传入文本的偏移。
+ * 注意：这是启发式信号，会漏会误报（与项目其它本地规则一致）。
+ */
+function splitSentences(text) {
+  const out = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    let j = i, depth = 0;
+    while (j < n) {
+      const c = text[j];
+      if ('“「『'.includes(c)) depth++;
+      else if ('”」』'.includes(c)) depth = Math.max(0, depth - 1);
+      if (c === '\n') break;
+      if ('。！？!?…'.includes(c) && depth === 0) { j++; break; }
+      j++;
+    }
+    const seg = text.slice(i, j);
+    if (seg.trim().length >= 6) out.push({ start: i, end: j, text: seg });
+    i = j;
+    while (i < n && '\n。！？!?…'.includes(text[i])) i++;
+    if (out.length > 4000) break;
+  }
+  return out;
+}
+
+export function autoTagChapter(text) {
+  const out = [];
+  if (!text) return out;
+  const sents = splitSentences(text);
+  const counts = { portrait: 0, scene: 0, action: 0, mood: 0, dialog: 0 };
+  const keys = Object.keys(TAG_WORDS);
+  for (const s of sents) {
+    const t = s.text;
+    const hasQuote = /[“”"「」]/.test(t);
+    let best = null, bestScore = 0;
+    for (const k of keys) {
+      let score = 0;
+      for (const w of TAG_WORDS[k]) if (t.includes(w)) score += (w.length >= 2 ? 2 : 1);
+      if (k === 'dialog') {
+        if (hasQuote) score += 1;
+        for (const w of TAG_LINK) if (t.includes(w)) score += 2;
+      }
+      if (score > bestScore) { bestScore = score; best = k; }
+    }
+    if (best && bestScore >= 2 && counts[best] < TAG_MAX[best]) {
+      counts[best]++;
+      out.push({ start: s.start, end: s.end, kind: best, color: TAG_COLORS[best], text: t.trim() });
+    }
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
 /* ══════════ 本地分析 ══════════ */
 export function chapterLead(content, c, n = 60) {
   let t = content.slice(c.start, Math.min(c.end, c.start + 2000));
