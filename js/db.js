@@ -1,7 +1,7 @@
 /* IndexedDB 封装 —— 所有数据只在本机 */
 
 const DB_NAME = 'modu-reader';
-const DB_VER = 5;
+const DB_VER = 6;
 let _db = null;
 
 export function openDB() {
@@ -41,6 +41,10 @@ export function openDB() {
       if (!db.objectStoreNames.contains('threads')) {
         const s = db.createObjectStore('threads', { keyPath: 'id' });
         s.createIndex('bookId', 'bookId');
+      }
+      /* v6 新增：影印模式的原文件（图片版 PDF 整份存本地，阅读时按页渲染） */
+      if (!db.objectStoreNames.contains('files')) {
+        db.createObjectStore('files', { keyPath: 'bookId' });
       }
     };
     r.onsuccess = () => { _db = r.result; resolve(_db); };
@@ -105,11 +109,23 @@ export const getText = async (id) => {
   return r ? r.content : '';
 };
 export const putText = (bookId, content) => put('texts', { bookId, content });
+
+/* ── 影印模式的原文件（v6） ── */
+export const putFile = (bookId, blob, meta = {}) =>
+  put('files', { bookId, blob, name: meta.name || '', pageCount: meta.pageCount || 0, size: blob?.size || 0, at: Date.now() });
+export const getFile = (bookId) => get('files', bookId);
+export const deleteFile = (bookId) => del('files', bookId);
+export async function listFilesMeta() {
+  const fs = await all('files');
+  return fs.map(f => ({ bookId: f.bookId, name: f.name, pageCount: f.pageCount, size: f.size }));
+}
+
 export async function removeBook(id) {
   const db = await openDB();
-  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'threads'], 'readwrite');
+  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'threads', 'files'], 'readwrite');
   t.objectStore('books').delete(id);
   t.objectStore('texts').delete(id);
+  t.objectStore('files').delete(id);
   const mi = t.objectStore('marks').index('bookId');
   const mreq = mi.openKeyCursor(IDBKeyRange.only(id));
   mreq.onsuccess = (e) => {
@@ -183,11 +199,13 @@ export async function getKV(k, def = null) {
 export const setKV = (k, v) => put('kv', { k, v });
 
 /* ── 备份 ── */
+/* 注意：影印模式的原文件（files）不入备份——体积大且是二进制，JSON 装不下；
+   恢复备份后这些书会提示「原文件不在，需重新导入」。 */
 export async function exportAll() {
   const [books, texts, marks, notes, materials, reports, creations, threads] = await Promise.all([
     all('books'), all('texts'), all('marks'), all('notes'), all('materials'), all('reports'), all('creations'), all('threads')
   ]);
-  return { app: 'modu-reader', version: 5, exportedAt: new Date().toISOString(), books, texts, marks, notes, materials, reports, creations, threads };
+  return { app: 'modu-reader', version: 6, exportedAt: new Date().toISOString(), books, texts, marks, notes, materials, reports, creations, threads };
 }
 
 export async function importAll(data) {
@@ -208,8 +226,8 @@ export async function importAll(data) {
 
 export async function clearAll() {
   const db = await openDB();
-  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations', 'threads'], 'readwrite');
-  ['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations', 'threads'].forEach(s => t.objectStore(s).clear());
+  const t = db.transaction(['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations', 'threads', 'files'], 'readwrite');
+  ['books', 'texts', 'marks', 'notes', 'materials', 'reports', 'creations', 'threads', 'files'].forEach(s => t.objectStore(s).clear());
   await doneP(t);
 }
 
