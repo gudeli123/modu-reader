@@ -12,8 +12,8 @@
 <meta name="format-detection" content="telephone=no">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="stylesheet" href="styles.css?v=22">
-<link rel="stylesheet" href="styles-desk.css?v=22">
+<link rel="stylesheet" href="styles.css?v=23">
+<link rel="stylesheet" href="styles-desk.css?v=23">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
 </head>
 <body>
@@ -197,9 +197,11 @@
     <!-- 导入进度遮罩 -->
     <div class="importing" id="importing" hidden>
       <div class="importing-card">
-        <div class="spinner"></div>
+        <div class="spinner" id="importingSpin"></div>
         <strong id="importingTitle">正在解析…</strong>
         <span id="importingSub">文件只在本地处理</span>
+        <div class="importing-bar" id="importingBar" hidden><i id="importingFill"></i></div>
+        <button class="btn-ghost importing-stop" id="importingStop" hidden>停止识别，先存已识别的部分</button>
       </div>
     </div>
   </main>
@@ -499,6 +501,6 @@
 </div>
 
 <!-- vendor 库（jszip / mammoth / pdf.js）改为按需动态加载，首屏更快；加载逻辑见 js/parse.js -->
-<script type="module" src="js/app.js?v=22"></script>
+<script type="module" src="js/app.js?v=23"></script>
 </body>
 </html>
