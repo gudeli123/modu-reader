@@ -6,7 +6,7 @@
  * 不缓存 /api/ 请求（AI 代理）与跨域请求。
  */
 // 版本对齐：CACHE 名与 index.html 中资源引用的 ?v= 保持同步（当前 v22）
-const CACHE = 'modu-reader-v22';
+const CACHE = 'modu-reader-v23';
 const CORE = [
   './',
   './index.html',
