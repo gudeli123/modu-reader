@@ -2,3 +2,7 @@ harmony/
 screenshots/
 .DS_Store
 *.log
+
+# 测试依赖（fake-indexeddb）与运行时临时副本
+tests/node_modules/
+tests/_parse.mjs
