@@ -146,39 +146,79 @@ async function parseEpub(file) {
 }
 
 /* ══════════ PDF ══════════ */
-function pdfItemsToLines(items) {
+/* 未映射字符：U+FFFD（替换符）与私用区 PUA。WPS / OCR 生成的 PDF 文字层损坏时大量出现 */
+const RE_PUA = /[\uFFFD\uE000-\uF8FF]/;
+
+/** 取一个 text item 的字号（pdf.js 的 height 常为 0，transform[3] 才是实际缩放） */
+function itemSize(it) {
+  const h = Math.abs(it.transform?.[3] || 0);
+  if (h >= 1) return h;
+  const v = Math.abs(it.height || 0);
+  return v >= 1 ? v : 10;
+}
+
+/**
+ * 把 pdf.js 的 text items 重组成行。
+ * 针对「WPS 可搜索 PDF / OCR 后置文字层」做了三处加固：
+ *   ① 行容差按字号自适应（固定 3.2pt 会把逐字抖动 1–2pt 的同一条行拆成好几行）；
+ *   ② 优先用 item.hasEOL 断行（文字层里本来就有行尾标记）；
+ *   ③ 过滤未映射字符，避免整段变成乱码。
+ */
+export function pdfItemsToLines(items) {
   const rows = [];
+
   for (const it of items) {
-    const s = it.str;
-    if (!s || !s.trim()) continue;
-    const y = it.transform[5];
-    let row = rows.find(r => Math.abs(r.y - y) <= 3.2);
-    if (!row) { row = { y, items: [] }; rows.push(row); }
-    row.items.push(it);
+    const raw = it.str;
+    if (!raw) continue;
+    const s = raw.replace(/[\uFFFD\uE000-\uF8FF]/g, '');
+    const y = it.transform?.[5];
+    if (!Number.isFinite(y)) continue;
+
+    const size = itemSize(it);
+    // 字号越大，基线抖动容忍度越高；下限 4pt 防止小字号被拆散
+    const tol = Math.max(4, Math.min(16, size * 0.42));
+
+    let row = null;
+    for (const r of rows) {
+      if (Math.abs(r.y - y) <= tol && Math.abs(r.size - size) <= size * 0.55) { row = r; break; }
+    }
+    if (!row) { row = { y, size, items: [] }; rows.push(row); }
+
+    if (s) row.items.push(it);
+    if (it.hasEOL) row.eol = true;
   }
+
   rows.sort((a, b) => b.y - a.y);
 
   const lines = [];
   for (const row of rows) {
+    if (!row.items.length) continue;
     row.items.sort((a, b) => a.transform[4] - b.transform[4]);
+
     let str = '';
     let prev = null;
     for (const it of row.items) {
+      const s = it.str.replace(/[\uFFFD\uE000-\uF8FF]/g, '');
+      if (!s) continue;
       if (prev) {
-        const gap = it.transform[4] - (prev.transform[4] + (prev.width || 0));
-        const size = it.height || Math.abs(it.transform[3]) || 10;
-        const latin = /[A-Za-z0-9]$/.test(str) && /^[A-Za-z0-9]/.test(it.str);
-        if (gap > size * 0.28 && latin) str += ' ';
-        else if (gap > size * 2.2) str += ' ';
+        const size = itemSize(it);
+        // 宽度缺失（OCR 文字层常见）时按字符数估算，避免 gap 算成负数
+        const prevW = prev.width
+          || (prev.str.length * itemSize(prev) * 0.5);
+        const gap = it.transform[4] - (prev.transform[4] + prevW);
+        const latin = /[A-Za-z0-9]$/.test(str) && /^[A-Za-z0-9]/.test(s);
+        if (latin && gap > size * 0.28) str += ' ';
+        else if (gap > size * 2.6) str += ' ';
       }
-      str += it.str;
+      str += s;
       prev = it;
     }
-    const clean = str.replace(/\s+/g, ' ').trim();
+
+    const clean = str.replace(/[ \t]+/g, ' ').trim();
     if (!clean) continue;
-    // 过滤页码 / 页眉
-    if (/^[-—\s]*\d{1,4}[-—\s]*$/.test(clean)) continue;
-    if (/^第?\s*\d{1,4}\s*页$/.test(clean)) continue;
+    // 过滤页码 / 页眉；要求整行只有数字或「第 N 页」，且长度短，避免误杀正文
+    if (clean.length <= 8 && /^[-—\s]*\d{1,4}[-—\s]*$/.test(clean)) continue;
+    if (clean.length <= 10 && /^第?\s*\d{1,4}\s*页$/.test(clean)) continue;
     lines.push(clean);
   }
   return lines;
@@ -205,6 +245,35 @@ function linesToParagraphs(lines) {
   return out.join('\n');
 }
 
+/**
+ * 文本层质量诊断。三种「不可直接读」的情况分开报，好让界面说人话：
+ *   image    —— 多数页几乎没有文字：图片版 / 扫描件
+ *   encoding —— 有文字层但大量未映射字符：WPS 导出的 CID 字体没带 ToUnicode
+ *   sparse   —— 字数过少，多半是排版异常
+ */
+export function pdfTextQuality(pages, numPages, rawChars = 0, badChars = 0) {
+  const total = pages.reduce((n, p) => n + p.length, 0);
+  const perPage = total / Math.max(1, numPages);
+  let emptyPages = 0;
+  for (const p of pages) if (p.trim().length < 20) emptyPages++;
+
+  const emptyRatio = emptyPages / Math.max(1, numPages);
+  const badRatio = badChars / Math.max(1, rawChars || total || 1);
+
+  let reason = '';
+  // 坏字符优先：文字层「存在但坏了」比「没有文字层」更精确，而且这两种情况界面要说的话不一样。
+  // （坏字符被 pdfItemsToLines 过滤后页面会显得很空，若不优先判断会被误报成图片版。）
+  if (badRatio > 0.06) reason = 'encoding';
+  else if (emptyRatio >= 0.55) reason = 'image';
+  else if (perPage < 30) reason = 'sparse';
+
+  return {
+    total, perPage, emptyPages, emptyRatio,
+    rawChars, badChars, badRatio,
+    scanned: !!reason, reason
+  };
+}
+
 async function parsePdf(file, onProgress) {
   await loadScriptOnce('vendor/pdf.min.js');
   if (!window.pdfjsLib) throw new Error('PDF 解析库未加载');
@@ -212,13 +281,22 @@ async function parsePdf(file, onProgress) {
   const buf = await file.arrayBuffer();
   const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
   const pages = [];
+  let rawChars = 0, badChars = 0;
+
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const tc = await page.getTextContent();
+    for (const it of tc.items) {
+      if (!it.str) continue;
+      rawChars += it.str.length;
+      const bad = it.str.match(/[\uFFFD\uE000-\uF8FF]/g);
+      if (bad) badChars += bad.length;
+    }
     pages.push(linesToParagraphs(pdfItemsToLines(tc.items)));
     onProgress?.(i / doc.numPages, i, doc.numPages);
     if (i % 4 === 0) await new Promise(r => setTimeout(r, 0));
   }
+
   let title = '', author = '';
   try {
     const md = await doc.getMetadata();
@@ -226,8 +304,15 @@ async function parsePdf(file, onProgress) {
     author = md.info?.Author || '';
   } catch { }
   const content = normalize(pages.join('\n\n'));
-  const perPage = content.length / Math.max(1, doc.numPages);
-  return { content, title, author, pageCount: doc.numPages, scanned: perPage < 30 };
+  const diag = pdfTextQuality(pages, doc.numPages, rawChars, badChars);
+
+  return {
+    content, title, author,
+    pageCount: doc.numPages,
+    scanned: diag.scanned,
+    diagnosis: diag,
+    pages
+  };
 }
 
 /* ══════════ 章节切分 ══════════ */
@@ -437,10 +522,22 @@ export async function parseFile(file, onProgress) {
 
   const content = res.content || '';
   if (!content.trim() || (ext === 'pdf' && res.scanned)) {
-    const e = new Error(ext === 'pdf'
-      ? `这个 PDF 是扫描图片版（每页平均只有 ${Math.round(content.length / Math.max(1, res.pageCount || 1))} 个字，基本提取不到正文）。`
-      : '文件里没有解析到文字。');
+    const d = res.diagnosis || {};
+    let msg;
+    if (ext !== 'pdf') {
+      msg = '文件里没有解析到文字。';
+    } else if (d.reason === 'encoding') {
+      msg = `这个 PDF 的文字层是坏的：约 ${Math.round((d.badRatio || 0) * 100)}% 的字符映射不成汉字，直接读会是一片乱码。`;
+    } else if (d.reason === 'image') {
+      msg = `这个 PDF 是图片版：${d.emptyPages || 0} / ${res.pageCount || 0} 页没有文字层。`;
+    } else {
+      msg = `这个 PDF 提取不到正文（每页平均 ${Math.round(d.perPage || 0)} 个字）。`;
+    }
+    const e = new Error(msg);
     e.code = 'SCANNED';
+    e.reason = d.reason || '';
+    e.pageCount = res.pageCount || 0;
+    e.diagnosis = d;
     e.partial = content;
     throw e;
   }
@@ -540,35 +637,58 @@ function loadTesseract() {
   return _tessLoading;
 }
 
+/* worker 缓存：先「试读几页」再「识别全本」时，模型不必重复下载 */
+let _ocrWorker = null;
+let _ocrLogger = null;
+
+async function getOcrWorker() {
+  if (_ocrWorker) return _ocrWorker;
+  await loadTesseract();
+  try {
+    _ocrWorker = await window.Tesseract.createWorker('chi_sim', 1, {
+      logger: (m) => { _ocrLogger?.(m); }
+    });
+  } catch (e) {
+    _tessLoading = null;
+    throw new Error('中文识别模型加载失败：' + (e?.message || e));
+  }
+  return _ocrWorker;
+}
+
+export function ocrReady() { return !!_ocrWorker; }
+
 /**
- * 把扫描版 PDF 逐页渲染成图片，交给 Tesseract 识别。
+ * 把 PDF 的指定页范围渲染成图片，交给 Tesseract 识别。
+ * opts: { fromPage, toPage, scale }
+ * 返回 { text, pages, fromPage, toPage, total }
  * 慢：每页约 3–8 秒；中文竖排、繁体、旧印刷体识别率一般。
  */
-export async function ocrPdf(file, onProgress) {
+export async function ocrPdf(file, onProgress, opts = {}) {
   await loadScriptOnce('vendor/pdf.min.js');
   if (!window.pdfjsLib) throw new Error('PDF 解析库未加载');
-  await loadTesseract();
 
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
   const buf = await file.arrayBuffer();
   const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
 
-  onProgress?.({ stage: 'engine', message: '正在加载中文识别模型（首次约 15MB）…' });
+  const from = Math.max(1, Math.min(opts.fromPage || 1, doc.numPages));
+  const to = Math.min(opts.toPage || doc.numPages, doc.numPages);
+  const scale = opts.scale || 2;
 
-  const worker = await window.Tesseract.createWorker('chi_sim', 1, {
-    logger: (m) => {
-      if (m.status === 'recognizing text') {
-        onProgress?.({ stage: 'page', progress: m.progress });
-      }
-    }
-  });
+  onProgress?.({ stage: 'engine', message: '正在准备中文识别模型（首次约 15MB）…' });
+  _ocrLogger = (m) => {
+    if (m.status === 'recognizing text') onProgress?.({ stage: 'page', progress: m.progress });
+  };
+  const worker = await getOcrWorker();
 
-  let out = '';
-  for (let i = 1; i <= doc.numPages; i++) {
-    onProgress?.({ stage: 'page', page: i, total: doc.numPages, message: `识别第 ${i} / ${doc.numPages} 页` });
+  const pages = [];
+  let stopped = false;
+  for (let i = from; i <= to; i++) {
+    if (opts.shouldStop?.()) { stopped = true; break; }
+    onProgress?.({ stage: 'page', page: i, total: to, message: `识别第 ${i} / ${to} 页` });
 
     const page = await doc.getPage(i);
-    const viewport = page.getViewport({ scale: 2 });
+    const viewport = page.getViewport({ scale });
     const canvas = document.createElement('canvas');
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
@@ -576,15 +696,28 @@ export async function ocrPdf(file, onProgress) {
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     const result = await worker.recognize(canvas);
-    const text = (result?.data?.text || '').replace(/\n{3,}/g, '\n\n').trim();
-    if (text) out += text + '\n\n';
+    pages.push((result?.data?.text || '').replace(/\n{3,}/g, '\n\n').trim());
 
     canvas.width = 0;
     canvas.height = 0;
+    onProgress?.({ stage: 'page', page: i, total: to, progress: 1 });
   }
 
-  await worker.terminate();
-  return cleanOcr(out);
+  return {
+    text: cleanOcr(pages.join('\n\n')),
+    pages,
+    fromPage: from,
+    toPage: from + Math.max(0, pages.length - 1),
+    total: doc.numPages,
+    stopped
+  };
+}
+
+/** 释放 OCR 引擎（换书或长时间不用时可调，非必须） */
+export async function disposeOcr() {
+  if (!_ocrWorker) return;
+  try { await _ocrWorker.terminate(); } catch { }
+  _ocrWorker = null;
 }
 
 /** tesseract 识别中文会在字间插空格，这里把它们收回去 */
