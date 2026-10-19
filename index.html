@@ -12,8 +12,8 @@
 <meta name="format-detection" content="telephone=no">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="stylesheet" href="styles.css?v=23">
-<link rel="stylesheet" href="styles-desk.css?v=23">
+<link rel="stylesheet" href="styles.css?v=24">
+<link rel="stylesheet" href="styles-desk.css?v=24">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
 </head>
 <body>
@@ -181,6 +181,19 @@
           </div>
         </div>
       </header>
+
+      <!-- 影印模式工具条（只在图片版 PDF 出现） -->
+      <div class="fx-bar" id="fxBar" hidden>
+        <span class="fx-count" id="fxCount">第 1 / 1 页</span>
+        <div class="fx-tools">
+          <button id="fxZoomOut" title="缩小">−</button>
+          <button id="fxZoomVal" class="fx-zoomval" title="恢复适应宽度">100%</button>
+          <button id="fxZoomIn" title="放大">+</button>
+          <span class="fx-sep"></span>
+          <button id="fxOcrPage" title="只识别这一页的文字">取本页文字</button>
+          <button id="fxToText" title="整本识别，另存一个可检索的文字版">转文字版</button>
+        </div>
+      </div>
 
       <div class="reader-scroll" id="readerScroll">
         <article class="reader" id="reader"></article>
@@ -501,6 +514,6 @@
 </div>
 
 <!-- vendor 库（jszip / mammoth / pdf.js）改为按需动态加载，首屏更快；加载逻辑见 js/parse.js -->
-<script type="module" src="js/app.js?v=23"></script>
+<script type="module" src="js/app.js?v=24"></script>
 </body>
 </html>
