@@ -720,6 +720,47 @@ export async function disposeOcr() {
   _ocrWorker = null;
 }
 
+/* ══════════ 影印模式：原页直显（不转文字） ══════════ */
+
+/**
+ * 打开一个 PDF（Blob / File 都行），返回 pdf.js 文档对象。
+ * 调用方负责在换书时 doc.destroy()。
+ */
+export async function openPdf(blob) {
+  await loadScriptOnce('vendor/pdf.min.js');
+  if (!window.pdfjsLib) throw new Error('PDF 解析库未加载');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
+  const buf = await blob.arrayBuffer();
+  return window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+}
+
+/**
+ * 把第 pageNo 页渲染进 canvas。
+ * opts.width = 目标 CSS 宽度（默认按原始宽度）；会按 devicePixelRatio 提分辨率，避免手机上发虚。
+ * 返回 { width, height } 的 CSS 尺寸。
+ */
+export async function renderPdfPage(doc, pageNo, canvas, opts = {}) {
+  const page = await doc.getPage(pageNo);
+  const base = page.getViewport({ scale: 1 });
+  const targetW = opts.width || base.width;
+  const scale = Math.max(0.15, Math.min(5, targetW / base.width));
+  const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+  const vp = page.getViewport({ scale: scale * dpr });
+
+  canvas.width = Math.max(1, Math.floor(vp.width));
+  canvas.height = Math.max(1, Math.floor(vp.height));
+  canvas.style.width = Math.floor(vp.width / dpr) + 'px';
+  canvas.style.height = Math.floor(vp.height / dpr) + 'px';
+
+  const ctx = canvas.getContext('2d', { alpha: false });
+  // 先铺白底：扫描件常带透明边，不铺会显示成黑块
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+  return { width: Math.round(vp.width / dpr), height: Math.round(vp.height / dpr), base: { w: base.width, h: base.height } };
+}
+
 /** tesseract 识别中文会在字间插空格，这里把它们收回去 */
 function cleanOcr(t) {
   return t
