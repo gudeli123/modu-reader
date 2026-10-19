@@ -6,7 +6,7 @@
  * 改动指引：交互/流程 → 本文件；界面结构 → index.html + styles.css；分析/提示词 → ai.js；存储 → db.js。
  */
 import * as db from './db.js';
-import { parseFile, escapeHtml, cnToNum, readingTime, ocrPdf, splitChapters, buildChapters, candidateLines } from './parse.js';
+import { parseFile, escapeHtml, cnToNum, readingTime, ocrPdf, splitChapters, buildChapters, candidateLines, openPdf, renderPdfPage } from './parse.js';
 import * as ai from './ai.js';
 import * as writer from './writer.js';
 import * as xdocx from './exportdocx.js';
@@ -215,6 +215,7 @@ function renderShelf() {
           ${b.private
             ? '<span>—</span>'
             : `${b.kind === 'draft' ? '<span class="draft-tag">我的稿</span>' : ''}
+          ${b.facsimile ? '<span class="draft-tag">影印</span>' : ''}
           <span>${(b.format || '').toUpperCase()}</span>
           <span>·</span>
           <span>${pct}%</span>
@@ -296,10 +297,22 @@ async function openBook(id, opts = {}) {
   $('#tocView').hidden = false;
   $('#tocBookTitle').textContent = dispTitle(book);
   $('#tocBookMeta').textContent = book.private
-    ? `私密书籍 · ${book.chapters.length} 章`
+    ? `私密书籍 · ${book.chapters.length} ${book.facsimile ? '页' : '章'}`
     : [
-        book.author, `${book.chapters.length} 章`, `${(book.charCount / 10000).toFixed(1)} 万字`, readingTime(book.charCount)
+        book.author, `${book.chapters.length} ${book.facsimile ? '页' : '章'}`,
+        book.facsimile ? '影印' : `${(book.charCount / 10000).toFixed(1)} 万字`,
+        book.facsimile ? '' : readingTime(book.charCount)
       ].filter(Boolean).join(' · ');
+
+  /* 影印模式：工具条、翻页文案、横向滚动（放大后要能左右拖） */
+  const isFx = !!book.facsimile;
+  const fxBar = $('#fxBar');
+  if (fxBar) fxBar.hidden = !isFx;
+  $('#reader').classList.toggle('fx', isFx);
+  $('#readerScroll').style.overflowX = isFx ? 'auto' : 'hidden';
+  $('#btnPrevChapter').textContent = isFx ? '← 上一页' : '← 上一章';
+  $('#btnNextChapter').textContent = isFx ? '下一页 →' : '下一章 →';
+  if (isFx) { _fx.zoom = 1; updateFxBar(book.progress?.chapter || 0); }
   const _nc = $('#bookNoteCount'); if (_nc) _nc.textContent = state.marks.length + state.notes.length;
   $('#btnBookFramework').textContent = '拆书';
 
@@ -379,8 +392,9 @@ function renderTOC() {
     btn.className = 'toc-item' + (i === state.chapter ? ' active' : '');
     btn.dataset.i = i;
     const words = c.end - c.start;
+    const wTxt = state.book?.facsimile ? '' : (words > 999 ? (words / 10000).toFixed(1) + '万' : words);
     btn.innerHTML = `<span class="n">${i + 1}</span><span class="t">${escapeHtml(cleanTitle(c.title))}</span>
-      <span class="w">${words > 999 ? (words / 10000).toFixed(1) + '万' : words}</span>`;
+      <span class="w">${wTxt}</span>`;
     btn.addEventListener('click', () => {
       if (rangeSel.active) { pickRange(i); return; }
       renderReader(i);
@@ -514,6 +528,7 @@ function renderReader(idx, opts = {}) {
   if (!state.book) return;
   idx = Math.max(0, Math.min(idx, state.book.chapters.length - 1));
   state.chapter = idx;
+  if (state.book.facsimile) { renderFacsimile(idx, opts); return; }
   const ch = state.book.chapters[idx];
   const reader = $('#reader');
   const frag = document.createDocumentFragment();
@@ -598,6 +613,214 @@ function renderReader(idx, opts = {}) {
   sc.style.scrollBehavior = '';
   updateProgress();
 }
+
+/* ══════════════════════ 影印模式（图片版 PDF 原页直读） ══════════════════════ */
+/* 思路：图片版 PDF 不转文字，整份存本地 → 按页渲染原图 → 想取字时单独识别这一页。
+   好处是排版、插图、手写批注原样保留；代价是这本书不能全文检索（除非另存文字版）。 */
+let _fx = { bookId: null, doc: null, zoom: 1, seq: 0 };
+
+/** 每一页当作一个「章」，目录即页码表，进度条也自然按页走 */
+function pagesAsChapters(n) {
+  const arr = [];
+  for (let i = 1; i <= n; i++) arr.push({ title: `第 ${i} 页`, start: 0, end: 0, page: i, auto: true });
+  return arr;
+}
+
+async function ensureFxDoc(bookId) {
+  if (_fx.doc && _fx.bookId === bookId) return _fx.doc;
+  const rec = await db.getFile(bookId);
+  if (!rec || !rec.blob) {
+    throw new Error('这本书的原文件不在本地了（可能被浏览器清理过空间），把 PDF 重新拖进来即可，笔记和标记不会丢');
+  }
+  const old = _fx.doc;
+  const doc = await openPdf(rec.blob);
+  _fx = { ..._fx, bookId, doc };
+  if (old) { try { await old.destroy(); } catch { } }
+  return doc;
+}
+
+function updateFxBar(idx) {
+  const total = state.book?.chapters.length || 0;
+  const c = $('#fxCount');
+  if (c) c.textContent = `第 ${idx + 1} / ${total} 页`;
+  const z = $('#fxZoomVal');
+  if (z) z.textContent = `${Math.round(_fx.zoom * 100)}%`;
+}
+
+async function renderFacsimile(idx, opts = {}) {
+  const book = state.book;
+  if (!book) return;
+  const reader = $('#reader');
+  const sc = $('#readerScroll');
+  const seq = ++_fx.seq;
+
+  reader.innerHTML = '';
+  reader.classList.add('fx');
+  const holder = document.createElement('div');
+  holder.className = 'fx-holder';
+  const tip = document.createElement('div');
+  tip.className = 'fx-tip';
+  tip.textContent = '正在渲染原页…';
+  const canvas = document.createElement('canvas');
+  canvas.className = 'fx-canvas';
+  holder.appendChild(canvas);
+  holder.appendChild(tip);
+  reader.appendChild(holder);
+
+  $('#topbarTitle').textContent = `${dispTitle(book)} · 第 ${idx + 1} / ${book.chapters.length} 页`;
+  $('#btnPrevChapter').disabled = idx === 0;
+  $('#btnNextChapter').disabled = idx >= book.chapters.length - 1;
+  $$('#tocList .toc-item').forEach(el => el.classList.toggle('active', +el.dataset.i === idx));
+  updateFxBar(idx);
+  if (!opts.silent) {
+    const active = $('#tocList .toc-item.active');
+    if (active) active.scrollIntoView({ block: 'nearest' });
+  }
+  sc.scrollTop = 0;
+
+  try {
+    const doc = await ensureFxDoc(book.id);
+    if (seq !== _fx.seq) return;                   // 已经翻到别的页了，这次作废
+    const availW = Math.max(240, sc.clientWidth - (window.innerWidth > 760 ? 48 : 16));
+    await renderPdfPage(doc, idx + 1, canvas, { width: availW * _fx.zoom });
+    if (seq !== _fx.seq) return;
+    tip.remove();
+  } catch (e) {
+    tip.textContent = `原页渲染失败：${e.message}`;
+    tip.classList.add('err');
+  }
+  updateProgress();
+}
+
+/* 缩放：只在影印模式下有意义，换回文字书不影响字号设置 */
+function setFxZoom(z) {
+  if (!state.book?.facsimile) return;
+  _fx.zoom = Math.max(0.5, Math.min(4, z));
+  renderFacsimile(state.chapter, { silent: true });
+}
+
+$('#fxZoomIn').addEventListener('click', () => setFxZoom(_fx.zoom * 1.25));
+$('#fxZoomOut').addEventListener('click', () => setFxZoom(_fx.zoom / 1.25));
+$('#fxZoomVal').addEventListener('click', () => setFxZoom(1));
+
+/* 窗口尺寸变了要重排，否则横竖屏切换后留白或溢出 */
+let _fxResizeT = 0;
+window.addEventListener('resize', () => {
+  if (!state.book?.facsimile) return;
+  clearTimeout(_fxResizeT);
+  _fxResizeT = setTimeout(() => renderFacsimile(state.chapter, { silent: true }), 220);
+});
+
+/** 只识别当前这一页：给「要引用原话，但不想整本等」的场合 */
+$('#fxOcrPage').addEventListener('click', async () => {
+  const book = state.book;
+  if (!book?.facsimile || state.busy) return;
+  const page = state.chapter + 1;
+  state.busy = true;
+  const btn = $('#fxOcrPage');
+  const old = btn.textContent;
+  btn.textContent = '识别中…';
+  btn.disabled = true;
+  try {
+    const rec = await db.getFile(book.id);
+    if (!rec?.blob) throw new Error('原文件不在本地');
+    const r = await ocrPdf(rec.blob, (p) => {
+      if (p.message) btn.textContent = p.progress ? `${Math.round(p.progress * 100)}%` : '识别中…';
+    }, { fromPage: page, toPage: page });
+    const text = (r.pages[0] || '').trim();
+    showPageText(page, text);
+  } catch (e) {
+    toast(`这一页没认出来：${e.message}`);
+  } finally {
+    btn.textContent = old;
+    btn.disabled = false;
+    state.busy = false;
+  }
+});
+
+function showPageText(page, text) {
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  const box = document.createElement('div');
+  box.className = 'modal scan-modal';
+  box.innerHTML = `
+    <div class="modal-head"><strong>第 ${page} 页的文字</strong>
+      <button class="icon-btn small" data-x>✕</button></div>
+    <div class="modal-body">
+      ${text ? `<div class="scan-sample fx-text">${escapeHtml(text)}</div>
+        <p class="scan-note">识别在本机完成。拿不准的字建议对着原页核一遍再引用。</p>`
+      : `<p class="scan-note">这一页没识别出文字，可能整页是图或手写。</p>`}
+    </div>
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <button class="btn-ghost" data-x>关闭</button>
+      ${text ? `<button class="btn-primary" data-act="copy">复制这段</button>` : ''}
+    </div>`;
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  box.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-act="copy"]')) {
+      try { await navigator.clipboard.writeText(text); toast('已复制'); } catch { toast('复制失败，长按手动选'); }
+      return;
+    }
+    if (e.target.closest('[data-x]')) mask.remove();
+  });
+  mask.addEventListener('click', (e) => { if (e.target === mask) mask.remove(); });
+}
+
+/** 影印书 → 另存一个文字版（不动原书），用于全文检索、拆书、朗读 */
+async function convertToTextBook() {
+  const book = state.book;
+  if (!book?.facsimile || state.busy) return;
+  if (!confirm(`把《${dispTitle(book)}》整本识别一遍，另存一个文字版？\n\n共 ${book.chapters.length} 页，每页 3–8 秒，约 ${fmtSpan(book.chapters.length)}。原书保留不动。`)) return;
+
+  state.busy = true;
+  _ocrStop = false;
+  const box = $('#importing');
+  box.hidden = false;
+  setOcrStopBtn(true);
+  setImporting('正在识别全本…', '首次要下载中文模型（约 15MB）', 0);
+  try {
+    const rec = await db.getFile(book.id);
+    if (!rec?.blob) throw new Error('原文件不在本地');
+    const r = await ocrPdf(rec.blob, (p) => {
+      if (p.page) setImporting('正在识别全本…', `第 ${p.page} / ${p.total} 页`, (p.page - 1) / Math.max(1, p.total));
+    }, { shouldStop: () => _ocrStop });
+
+    const text = (r.pages || []).map(t => (t || '').trim()).join('\n\n');
+    if (!text.trim()) throw new Error('一页都没认出文字');
+
+    const nb = {
+      id: db.uid(),
+      kind: book.kind || 'book',
+      title: `${dispTitle(book)}（文字版）`,
+      author: book.author || '',
+      format: 'pdf',
+      size: 0,
+      addedAt: Date.now(),
+      lastReadAt: Date.now(),
+      charCount: text.length,
+      chapters: splitChapters(text).map(c => ({ title: c.title, start: c.start, end: c.end, auto: c.auto, lead: c.lead })),
+      progress: { chapter: 0, ratio: 0, percent: 0 },
+      fromFacsimile: book.id,
+      ocrStopped: !!r.stopped
+    };
+    await db.putText(nb.id, text);
+    await db.putBook(nb);
+    toast(r.stopped ? `已在第 ${r.toPage} 页停下，文字版已存（可检索、可拆书）` : '文字版已生成，在书架里');
+    await loadBooks();
+  } catch (e) {
+    box.hidden = true;
+    // 多半是断网导致模型下载失败：给 WPS 那条兜底路子，别让人干等
+    const choice = await askScannedFallback({ name: `${dispTitle(book)}.pdf` }, e.message);
+    if (choice === 'reselect') $('#fileInput').click();
+  } finally {
+    setOcrStopBtn(false);
+    box.hidden = true;
+    state.busy = false;
+  }
+}
+$('#fxToText').addEventListener('click', convertToTextBook);
 
 /* ══════════ 文内批注 ══════════ */
 let inlineMode = false;
@@ -893,9 +1116,17 @@ function buildParagraph(text, pStart, marks, inline) {
 }
 
 function updateProgress() {
+  if (!state.book) return;
   const ch = state.book.chapters[state.chapter];
   const sc = $('#readerScroll');
   const ratio = sc.scrollHeight > sc.clientHeight ? sc.scrollTop / (sc.scrollHeight - sc.clientHeight) : 0;
+  if (state.book.facsimile) {
+    // 影印书没有字符偏移，进度按页算
+    const pct = ((state.chapter + Math.min(1, Math.max(0, ratio))) / Math.max(1, state.book.chapters.length)) * 100;
+    $('#progressFill').style.width = Math.min(100, pct).toFixed(2) + '%';
+    return;
+  }
+  if (!state.content.length) { $('#progressFill').style.width = '0%'; return; }
   const abs = ch.start + (ch.end - ch.start) * Math.min(1, Math.max(0, ratio));
   $('#progressFill').style.width = (abs / state.content.length * 100).toFixed(2) + '%';
 }
@@ -906,11 +1137,14 @@ const saveProgress = debounce(async () => {
   const ch = state.book.chapters[state.chapter];
   const sc = $('#readerScroll');
   const ratio = sc.scrollHeight > sc.clientHeight ? sc.scrollTop / (sc.scrollHeight - sc.clientHeight) : 0;
-  state.book.progress = {
-    chapter: state.chapter,
-    ratio,
-    percent: Math.min(1, (ch.start + (ch.end - ch.start) * ratio) / state.content.length)
-  };
+  const total = Math.max(1, state.book.chapters.length);
+  state.book.progress = state.book.facsimile
+    ? { chapter: state.chapter, ratio, percent: Math.min(1, (state.chapter + ratio) / total) }
+    : {
+        chapter: state.chapter,
+        ratio,
+        percent: state.content.length ? Math.min(1, (ch.start + (ch.end - ch.start) * ratio) / state.content.length) : 0
+      };
   await db.putBook(state.book);
   const card = $('#shelf .book-card.active');
   if (card) card.querySelector('.book-progress i').style.width = Math.max(1.5, state.book.progress.percent * 100) + '%';
@@ -1935,7 +2169,14 @@ function renderSearch() {
   const box = $('#searchResults');
   if (!q) {
     box.innerHTML = '';
-    $('#searchMeta').textContent = state.book ? `全书 ${(state.book.charCount / 10000).toFixed(1)} 万字` : '';
+    $('#searchMeta').textContent = state.book
+      ? (state.book.facsimile ? '影印模式 · 未识别文字' : `全书 ${(state.book.charCount / 10000).toFixed(1)} 万字`)
+      : '';
+    return;
+  }
+  if (state.book?.facsimile && !state.content.trim()) {
+    $('#searchMeta').textContent = '影印模式';
+    box.innerHTML = `<div class="notes-empty">这本书按影印模式存着，正文还没变成文字，所以搜不到。<br>需要检索就点阅读页上方的「转文字版」，会另外存一个可检索的副本。</div>`;
     return;
   }
   if (searchCache.q !== q || !searchCache.res.length) {
@@ -2608,6 +2849,10 @@ async function showWbcheck() {
 async function showOutline(type, question, force = false) {
   if (!state.book) return;
   if (type === 'wbcheck') { await showWbcheck(); return; }
+  if (state.book.facsimile && !state.content.trim()) {
+    toast('影印模式没有正文可拆。先点「转文字版」生成副本，再拆那一本。');
+    return;
+  }
   const isChapter = type === 'chapter';
   const isWriting = type === 'writing';
   const isSummary = type === 'summary';
@@ -3398,8 +3643,10 @@ $('#btnSpeak').addEventListener('click', () => {
   if (!state.book) return;
 
   const ch = state.book.chapters[state.chapter];
-  const text = state.content.slice(ch.start, ch.end).replace(/\s+/g, '');
-  if (!text.trim()) return;
+  const text = (state.content || '').slice(ch.start, ch.end).replace(/\s+/g, '');
+  if (!text.trim()) {
+    return toast(state.book.facsimile ? '影印模式没有文字可读。需要朗读就先「转文字版」' : '这一章没有可读的文字');
+  }
 
   // 先在用户手势内进入“朗读中”，避免二次点击；再等语音列表就绪
   _speaking = true;
@@ -3542,159 +3789,25 @@ function fmtSpan(pages) {
   return sec < 90 ? `约 ${Math.round(sec)} 秒` : `约 ${Math.round(sec / 60)} 分钟`;
 }
 
-/** 样张确认：先认 5 页给用户看准不准，再决定要不要跑全本 */
-function askOcrSample(file, sample, pageCount) {
-  return new Promise((resolve) => {
-    const mask = document.createElement('div');
-    mask.className = 'modal-mask';
-    const box = document.createElement('div');
-    box.className = 'modal scan-modal';
-    const shown = (sample.text || '').trim().slice(0, 400);
-    const gotPages = sample.pages.filter(x => x.trim()).length;
-    const rest = Math.max(0, pageCount - sample.toPage);
-    box.innerHTML = `
-      <div class="modal-head"><strong>先认了 ${sample.toPage} 页，看看准不准</strong>
-        <button class="icon-btn small" data-x>✕</button></div>
-      <div class="modal-body">
-        <p class="scan-file">${escapeHtml(file.name)}</p>
-        <div class="scan-sample">${escapeHtml(shown)}</div>
-        <p class="scan-note">这 ${sample.toPage} 页里有 ${gotPages} 页认出了文字。继续识别剩下的 ${rest} 页要 ${fmtSpan(rest)}；也可以先只存这几页试读。</p>
-      </div>
-      <div class="modal-foot">
-        <span class="outline-hint">识别在本机完成，文件不上传</span>
-        <div class="spacer"></div>
-        <button class="btn-ghost" data-act="skip">放弃这本</button>
-        <button class="btn-ghost" data-act="sample">只读这 ${sample.toPage} 页</button>
-        ${rest > 0 ? `<button class="btn-primary" data-act="all">识别全本（还剩 ${rest} 页）</button>` : ''}
-      </div>`;
-
-    mask.appendChild(box);
-    document.body.appendChild(mask);
-
-    const done = (v) => { mask.remove(); resolve(v); };
-    box.addEventListener('click', (e) => {
-      if (e.target.closest('[data-x]')) return done('skip');
-      const b = e.target.closest('[data-act]');
-      if (b) done(b.dataset.act);
-    });
-    mask.addEventListener('click', (e) => { if (e.target === mask) done('skip'); });
-  });
-}
-
-/** OCR 引擎起不来（多是断网）时的兜底引导：只推 WPS 转，不再让人白等 */
-function askScannedFallback(file, reason) {
-  return new Promise((resolve) => {
-    const mask = document.createElement('div');
-    mask.className = 'modal-mask';
-    const box = document.createElement('div');
-    box.className = 'modal scan-modal';
-    box.innerHTML = `
-      <div class="modal-head"><strong>这个 PDF 没有可用的文字层</strong>
-        <button class="icon-btn small" data-x>✕</button></div>
-      <div class="modal-body">
-        <p class="scan-file">${escapeHtml(file.name)}</p>
-        <p class="scan-reason">${escapeHtml(String(reason || '').replace(/[。．.]$/, ''))}。</p>
-        <div class="scan-opt primary">
-          <div class="scan-opt-head"><b>用 WPS 转一次</b><span>最准 · 中文扫描件识别率高得多</span></div>
-          <ol class="scan-steps">
-            <li>用 WPS 打开这个 PDF</li>
-            <li>找「PDF 转 Word」或「PDF 转可搜索」（手机在「工具 → PDF 转换」里）</li>
-            <li>把转好的文件选回墨读，章节会自动切</li>
-          </ol>
-          <button class="btn-ghost" data-act="reselect">我已转好，选择文件</button>
-        </div>
-      </div>
-      <div class="modal-foot">
-        <span class="outline-hint">内置识别要联网下载模型，当前没连上</span>
-        <div class="spacer"></div>
-        <button class="btn-ghost" data-act="skip">跳过这本</button>
-      </div>`;
-
-    mask.appendChild(box);
-    document.body.appendChild(mask);
-
-    const done = (v, pick) => {
-      mask.remove();
-      if (pick) $('#fileInput').click();
-      resolve(v);
-    };
-    box.addEventListener('click', (e) => {
-      if (e.target.closest('[data-x]')) return done('skip');
-      const b = e.target.closest('[data-act]');
-      if (!b) return;
-      done(b.dataset.act, b.dataset.act === 'reselect');
-    });
-    mask.addEventListener('click', (e) => { if (e.target === mask) done('skip'); });
-  });
-}
-
 /**
- * 图片版 / 文字层损坏的 PDF 的导入主流程：
- *   试认 5 页 → 给用户看样张 → 继续全本（可随时停，已识别的照存）
- * 返回 null 表示放弃；返回 { reselect:true } 表示用户要去重选文件。
+ * 图片版 / 文字层损坏的 PDF：直接走影印模式。
+ * 不转文字、不跑 OCR、不等模型下载——原文件整份存本地，阅读时按页渲染原图。
+ * 需要文字时，阅读界面里有「取本页文字」和「转文字版」两个按钮。
  */
-async function ocrImport(file, err) {
-  const total = err.pageCount || 0;
-  const sampleTo = Math.min(5, total || 5);
-  _ocrStop = false;
-
-  setOcrStopBtn(false);
-  setImporting('正在识别前 5 页…', '首次要下载中文模型（约 15MB），先跑几页给你验货', null);
-
-  let sample;
-  try {
-    sample = await ocrPdf(file, (p) => {
-      if (p.message) setImporting(null, p.message, null);
-    }, { fromPage: 1, toPage: sampleTo });
-  } catch (e) {
-    const choice = await askScannedFallback(file, `${err.message} 内置识别引擎也没起来：${e.message}`);
-    return choice === 'reselect' ? { reselect: true } : null;
-  }
-
-  if (!sample.pages.some(t => t.trim())) {
-    const choice = await askScannedFallback(file, `${err.message} 前 5 页没认出文字`);
-    return choice === 'reselect' ? { reselect: true } : null;
-  }
-
-  const choice = await askOcrSample(file, sample, total || sample.toPage);
-  if (choice === 'skip') return null;
-
-  let pages = sample.pages.slice();
-  let endPage = sample.toPage;
-
-  if (choice === 'all' && endPage < total) {
-    _ocrStop = false;
-    setOcrStopBtn(true);
-    setImporting('正在识别全本…', `第 ${endPage + 1} / ${total} 页`, 0);
-    try {
-      const rest = await ocrPdf(file, (p) => {
-        if (p.page) setImporting('正在识别全本…', `第 ${p.page} / ${p.total} 页`, (p.page - 1) / Math.max(1, p.total));
-      }, {
-        fromPage: endPage + 1,
-        toPage: total,
-        shouldStop: () => _ocrStop
-      });
-      pages = pages.concat(rest.pages);
-      endPage = rest.toPage;
-      if (rest.stopped) toast(`已在第 ${endPage} 页停下，已识别的部分照常保存`);
-    } catch (e) {
-      toast(`识别中断：${e.message}。已识别的 ${endPage} 页照常保存`);
-    } finally {
-      setOcrStopBtn(false);
-    }
-  }
-
-  const text = pages.map(t => (t || '').trim()).filter(Boolean).join('\n\n');
-  if (!text) return null;
-
+async function facsimileImport(file, err) {
+  const pages = err.pageCount || 0;
+  if (!pages) throw new Error('这个 PDF 读不出页数，文件可能损坏了。');
   return {
     title: file.name.replace(/\.[^.]+$/, ''),
     author: '',
     format: 'pdf',
-    content: text,
-    chapters: splitChapters(text),
-    charCount: text.length,
-    pageCount: endPage
+    facsimile: true,
+    pageCount: pages,
+    reason: err.reason || '',
+    content: '',
+    chapters: pagesAsChapters(pages),
+    charCount: 0,
+    blob: file
   };
 }
 
@@ -3715,13 +3828,8 @@ async function importFiles(files, kind = 'book') {
         });
       } catch (err) {
         if (err.code !== 'SCANNED') throw err;
-        const got = await ocrImport(file, err);
-        if (!got || got.reselect) {
-          box.hidden = true;
-          err.silent = true;
-          throw err;
-        }
-        parsed = got;
+        // 图片版 / 文字层损坏：默认走影印模式，不转文字，直接把原页收进来
+        parsed = await facsimileImport(file, err);
       }
 
       const book = {
@@ -3734,9 +3842,19 @@ async function importFiles(files, kind = 'book') {
         addedAt: Date.now(),
         lastReadAt: Date.now(),
         charCount: parsed.charCount,
-        chapters: parsed.chapters.map(c => ({ title: c.title, start: c.start, end: c.end, auto: c.auto, lead: c.lead })),
+        chapters: parsed.chapters.map(c => ({ title: c.title, start: c.start, end: c.end, auto: c.auto, lead: c.lead, ...(c.page ? { page: c.page } : {}) })),
         progress: { chapter: 0, ratio: 0, percent: 0 }
       };
+      if (parsed.facsimile) {
+        book.facsimile = true;
+        book.pageCount = parsed.pageCount;
+        book.ocrReason = parsed.reason || '';
+        try {
+          await db.putFile(book.id, parsed.blob, { name: file.name, pageCount: parsed.pageCount });
+        } catch (e) {
+          throw new Error(`原文件存不进本地（约 ${(file.size / 1048576).toFixed(1)}MB）：${e?.name === 'QuotaExceededError' ? '浏览器空间不够了，删几本不看的书再试' : (e.message || e)}`);
+        }
+      }
       await db.putText(book.id, parsed.content);
       await db.putBook(book);
       ok++;
@@ -3749,8 +3867,12 @@ async function importFiles(files, kind = 'book') {
   box.hidden = true;
   await loadBooks();
   if (ok) {
-    toast(`已导入 ${ok} 本书`);
     const newest = state.books[0];
+    if (newest?.facsimile) {
+      toast(`已按影印模式导入，共 ${newest.pageCount || newest.chapters.length} 页；原页可缩放，要文字就点「取本页文字」`);
+    } else {
+      toast(`已导入 ${ok} 本书`);
+    }
     if (newest) await openBook(newest.id);
   }
 }
