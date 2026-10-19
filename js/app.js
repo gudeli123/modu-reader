@@ -3508,37 +3508,104 @@ $('#fileInputDraft').addEventListener('change', async (e) => {
   await importFiles(files, 'draft');
 });
 
-function askScanned(file, reason) {
+/* ══════════ 图片版 / 文字层损坏的 PDF：自动 OCR ══════════ */
+
+let _ocrStop = false;
+
+function setImporting(title, sub, progress) {
+  if (title != null) $('#importingTitle').textContent = title;
+  if (sub != null) $('#importingSub').textContent = sub;
+  const bar = $('#importingBar'), fill = $('#importingFill');
+  if (!bar || !fill) return;
+  if (progress == null) {
+    bar.hidden = true;
+    fill.style.width = '0%';
+  } else {
+    bar.hidden = false;
+    fill.style.width = `${Math.max(0, Math.min(1, progress)) * 100}%`;
+  }
+}
+
+function setOcrStopBtn(show) {
+  const b = $('#importingStop');
+  if (b) b.hidden = !show;
+}
+
+$('#importingStop').addEventListener('click', () => {
+  _ocrStop = true;
+  setImporting('正在收尾…', '把已经认出来的部分保存下来');
+  setOcrStopBtn(false);
+});
+
+function fmtSpan(pages) {
+  const sec = Math.max(0, pages) * 6;
+  return sec < 90 ? `约 ${Math.round(sec)} 秒` : `约 ${Math.round(sec / 60)} 分钟`;
+}
+
+/** 样张确认：先认 5 页给用户看准不准，再决定要不要跑全本 */
+function askOcrSample(file, sample, pageCount) {
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    const box = document.createElement('div');
+    box.className = 'modal scan-modal';
+    const shown = (sample.text || '').trim().slice(0, 400);
+    const gotPages = sample.pages.filter(x => x.trim()).length;
+    const rest = Math.max(0, pageCount - sample.toPage);
+    box.innerHTML = `
+      <div class="modal-head"><strong>先认了 ${sample.toPage} 页，看看准不准</strong>
+        <button class="icon-btn small" data-x>✕</button></div>
+      <div class="modal-body">
+        <p class="scan-file">${escapeHtml(file.name)}</p>
+        <div class="scan-sample">${escapeHtml(shown)}</div>
+        <p class="scan-note">这 ${sample.toPage} 页里有 ${gotPages} 页认出了文字。继续识别剩下的 ${rest} 页要 ${fmtSpan(rest)}；也可以先只存这几页试读。</p>
+      </div>
+      <div class="modal-foot">
+        <span class="outline-hint">识别在本机完成，文件不上传</span>
+        <div class="spacer"></div>
+        <button class="btn-ghost" data-act="skip">放弃这本</button>
+        <button class="btn-ghost" data-act="sample">只读这 ${sample.toPage} 页</button>
+        ${rest > 0 ? `<button class="btn-primary" data-act="all">识别全本（还剩 ${rest} 页）</button>` : ''}
+      </div>`;
+
+    mask.appendChild(box);
+    document.body.appendChild(mask);
+
+    const done = (v) => { mask.remove(); resolve(v); };
+    box.addEventListener('click', (e) => {
+      if (e.target.closest('[data-x]')) return done('skip');
+      const b = e.target.closest('[data-act]');
+      if (b) done(b.dataset.act);
+    });
+    mask.addEventListener('click', (e) => { if (e.target === mask) done('skip'); });
+  });
+}
+
+/** OCR 引擎起不来（多是断网）时的兜底引导：只推 WPS 转，不再让人白等 */
+function askScannedFallback(file, reason) {
   return new Promise((resolve) => {
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
     const box = document.createElement('div');
     box.className = 'modal scan-modal';
     box.innerHTML = `
-      <div class="modal-head"><strong>这个 PDF 是扫描版</strong>
+      <div class="modal-head"><strong>这个 PDF 没有可用的文字层</strong>
         <button class="icon-btn small" data-x>✕</button></div>
       <div class="modal-body">
         <p class="scan-file">${escapeHtml(file.name)}</p>
-        <p class="scan-reason">${escapeHtml((((reason.match(/（(.+?)）/) || [])[1]) || reason).replace(/[。．.]$/, ''))}。没有文字层，只能靠识别。</p>
-
+        <p class="scan-reason">${escapeHtml(String(reason || '').replace(/[。．.]$/, ''))}。</p>
         <div class="scan-opt primary">
-          <div class="scan-opt-head"><b>用 WPS 转</b><span>最准 · 中文扫描件识别率高得多</span></div>
+          <div class="scan-opt-head"><b>用 WPS 转一次</b><span>最准 · 中文扫描件识别率高得多</span></div>
           <ol class="scan-steps">
             <li>用 WPS 打开这个 PDF</li>
-            <li>找「PDF 转 Word」（手机在「工具 → PDF 转换」里）</li>
+            <li>找「PDF 转 Word」或「PDF 转可搜索」（手机在「工具 → PDF 转换」里）</li>
             <li>把转好的文件选回墨读，章节会自动切</li>
           </ol>
           <button class="btn-ghost" data-act="reselect">我已转好，选择文件</button>
         </div>
-
-        <div class="scan-opt">
-          <div class="scan-opt-head"><b>用内置 OCR</b><span>应急，识别率一般</span></div>
-          <p class="scan-note">每页 3–8 秒，首次要下载约 15MB 中文模型。字形相近的字会认错，比如「雨」认成「十」。</p>
-          <button class="btn-ghost" data-act="ocr">开始识别</button>
-        </div>
       </div>
       <div class="modal-foot">
-        <span class="outline-hint">识别在本机完成，文件不上传</span>
+        <span class="outline-hint">内置识别要联网下载模型，当前没连上</span>
         <div class="spacer"></div>
         <button class="btn-ghost" data-act="skip">跳过这本</button>
       </div>`;
@@ -3561,6 +3628,76 @@ function askScanned(file, reason) {
   });
 }
 
+/**
+ * 图片版 / 文字层损坏的 PDF 的导入主流程：
+ *   试认 5 页 → 给用户看样张 → 继续全本（可随时停，已识别的照存）
+ * 返回 null 表示放弃；返回 { reselect:true } 表示用户要去重选文件。
+ */
+async function ocrImport(file, err) {
+  const total = err.pageCount || 0;
+  const sampleTo = Math.min(5, total || 5);
+  _ocrStop = false;
+
+  setOcrStopBtn(false);
+  setImporting('正在识别前 5 页…', '首次要下载中文模型（约 15MB），先跑几页给你验货', null);
+
+  let sample;
+  try {
+    sample = await ocrPdf(file, (p) => {
+      if (p.message) setImporting(null, p.message, null);
+    }, { fromPage: 1, toPage: sampleTo });
+  } catch (e) {
+    const choice = await askScannedFallback(file, `${err.message} 内置识别引擎也没起来：${e.message}`);
+    return choice === 'reselect' ? { reselect: true } : null;
+  }
+
+  if (!sample.pages.some(t => t.trim())) {
+    const choice = await askScannedFallback(file, `${err.message} 前 5 页没认出文字`);
+    return choice === 'reselect' ? { reselect: true } : null;
+  }
+
+  const choice = await askOcrSample(file, sample, total || sample.toPage);
+  if (choice === 'skip') return null;
+
+  let pages = sample.pages.slice();
+  let endPage = sample.toPage;
+
+  if (choice === 'all' && endPage < total) {
+    _ocrStop = false;
+    setOcrStopBtn(true);
+    setImporting('正在识别全本…', `第 ${endPage + 1} / ${total} 页`, 0);
+    try {
+      const rest = await ocrPdf(file, (p) => {
+        if (p.page) setImporting('正在识别全本…', `第 ${p.page} / ${p.total} 页`, (p.page - 1) / Math.max(1, p.total));
+      }, {
+        fromPage: endPage + 1,
+        toPage: total,
+        shouldStop: () => _ocrStop
+      });
+      pages = pages.concat(rest.pages);
+      endPage = rest.toPage;
+      if (rest.stopped) toast(`已在第 ${endPage} 页停下，已识别的部分照常保存`);
+    } catch (e) {
+      toast(`识别中断：${e.message}。已识别的 ${endPage} 页照常保存`);
+    } finally {
+      setOcrStopBtn(false);
+    }
+  }
+
+  const text = pages.map(t => (t || '').trim()).filter(Boolean).join('\n\n');
+  if (!text) return null;
+
+  return {
+    title: file.name.replace(/\.[^.]+$/, ''),
+    author: '',
+    format: 'pdf',
+    content: text,
+    chapters: splitChapters(text),
+    charCount: text.length,
+    pageCount: endPage
+  };
+}
+
 async function importFiles(files, kind = 'book') {
   if (!files.length) return;
   const box = $('#importing');
@@ -3568,8 +3705,8 @@ async function importFiles(files, kind = 'book') {
   let ok = 0;
 
   for (const file of files) {
-    $('#importingTitle').textContent = `正在解析《${file.name}》`;
-    $('#importingSub').textContent = '文件只在本地处理，不会上传';
+    setImporting(`正在解析《${file.name}》`, '文件只在本地处理，不会上传', null);
+    setOcrStopBtn(false);
     try {
       let parsed;
       try {
@@ -3578,35 +3715,13 @@ async function importFiles(files, kind = 'book') {
         });
       } catch (err) {
         if (err.code !== 'SCANNED') throw err;
-        const choice = await askScanned(file, err.message);
-        if (choice !== 'ocr') {
+        const got = await ocrImport(file, err);
+        if (!got || got.reselect) {
           box.hidden = true;
           err.silent = true;
           throw err;
         }
-
-        $('#importingTitle').textContent = '正在 OCR 识别…';
-        $('#importingSub').textContent = '首次需要下载中文模型（约 15MB）';
-        const text = await Promise.race([
-          ocrPdf(file, (p) => {
-            if (p.message) {
-              $('#importingSub').textContent = p.message + (p.progress ? `（${Math.round(p.progress * 100)}%）` : '');
-            }
-          }),
-          new Promise((_, rej) => setTimeout(
-            () => rej(new Error('OCR 超时（90 秒）。多半是中文模型下载太慢，建议改用 WPS / 白描 / 微信「提取文字」转成 TXT 再导入。')),
-            90000
-          ))
-        ]);
-        if (!text.trim()) throw new Error('OCR 没有识别出文字，建议改用 WPS / 白描转换。');
-        parsed = {
-          title: file.name.replace(/\.[^.]+$/, ''),
-          author: '',
-          format: 'pdf',
-          content: text,
-          chapters: splitChapters(text),
-          charCount: text.length
-        };
+        parsed = got;
       }
 
       const book = {
