@@ -1,7 +1,7 @@
 # 墨读 · 新 AI 交接说明
 
 > 面向"接手本项目的新 AI / 开发者"。目标：拿到这个 zip 就能快速理解**当前真实状态**并继续开发。
-> 更新时间：2026-10-19 ｜ 当前版本 **v23**（版本号含义见 §3）
+> 更新时间：2026-10-19 ｜ 当前版本 **v24**（版本号含义见 §3）
 
 ---
 
@@ -41,7 +41,7 @@
 │   ├── app.js          主控制器/路由/渲染；import db.js / parse.js / ai.js / writer.js / exportdocx.js
 │   ├── ai.js           模型调用封装 + 本地分析规则 + 提示词 + mdToHtml
 │   ├── db.js           IndexedDB 封装 + 各 store CRUD + 备份/导入/清空
-│   ├── parse.js        多格式解析(TXT/DOCX/EPUB/PDF) + 分章(buildChapters/candidateLines) + 图片版/坏文字层 PDF 的 OCR 与试读
+│   ├── parse.js        多格式解析(TXT/DOCX/EPUB/PDF) + 分章 + 图片版 PDF 的原页渲染(openPdf/renderPdfPage) 与 OCR(ocrPdf)
 │   ├── analyze.worker.js  module worker：把「拆书 / 稿件体检」的重计算搬离主线程（app.js 内有主线程兜底）
 │   ├── writer.js       写作工位：日更追踪·存稿进度·伏笔台账·人物一致性·审稿·过审自查·AI 味检测·平台导出
 │   └── exportdocx.js   纯前端零依赖 Word(.docx) 导出（自实现 ZIP+OOXML）
@@ -55,12 +55,13 @@
 ## 3. 关键约定（改代码前必读）
 
 - **版本体系（三套，务必分清）**：
-  - `js/db.js` 的 `DB_VER`（IndexedDB schema）= **5**。
+  - `js/db.js` 的 `DB_VER`（IndexedDB schema）= **6**。
   - `index.html` 的资源版本串 `?v=NN`（**3 处**：styles.css / styles-desk.css / js/app.js）= **当前 23**。
-  - `sw.js` 的 `CACHE`（形如 `modu-reader-vNN`）= **当前 v23**。
+  - `sw.js` 的 `CACHE`（形如 `modu-reader-vNN`）= **当前 v24**。
   - 约定：**改前端时，`index.html` 的 ?v= 与 `sw.js` 的 CACHE 一起 +1**。`ai.js` / `parse.js` / `analyze.worker.js` 没有 ?v=，靠 SW 换 CACHE 名让旧缓存整体失效。
 - **分章数据结构**：全书正文是**一个连续字符串**；`book.chapters[i] = {title, start, end, auto?, matter?, lead?}`，`start/end` 是相对正文的**绝对字符偏移**；`matter ∈ {'', 'pre', 'open', 'post'}`。所有"跳回原文"靠偏移（DOM 上用 `data-goto-at` / DOM 函数 `gotoOffset`）。
-- **IndexedDB**：库名 `modu-reader`（DB_VER=5）。stores：`books, texts, marks, notes, materials, kv, reports, creations, threads`。**加/改 store 必须把 DB_VER +1 并在 `onupgradeneeded` 写迁移。**
+- **IndexedDB**：库名 `modu-reader`（DB_VER=6）。stores：`books, texts, marks, notes, materials, kv, reports, creations, threads, files`。**加/改 store 必须把 DB_VER +1 并在 `onupgradeneeded` 写迁移。**
+  - `files`（v6 新增）：影印书的**原始 PDF Blob**，`{bookId, blob, name, pageCount, size, at}`。删书时 `removeBook` 会一并清掉；**不进备份**（JSON 装不下二进制），恢复备份后影印书会提示重新导入。
 - **localStorage 键**：`modu.ai.settings`（AI 配置）、`modu.prefs`（阅读偏好：size/lh/theme/family/indent/width）、`modu.usage`（用量）、`modu.core.<bookId>`、`modu.fontTip`（字体一次性提示）；写作工位相关键见 `writer.js`。
 - **AI 调用**：统一 `ai.askAI(messages, {onDelta, signal, maxTokens})`（OpenAI 兼容、流式 SSE）；Key 只存本机 localStorage。可选走 `server.py` 的 `/api/llm` 代理（解决浏览器 CORS）。
 - **Service Worker 策略**：导航 network-first（失败回退缓存）；同源静态资源"缓存优先 + 后台更新"（`caches.match(req, {ignoreSearch:true})`）；不缓存 `/api/` 与跨域；预缓存列表见 sw.js 的 `CORE`。
@@ -79,7 +80,7 @@
 
 ---
 
-## 5. 最近改动历史（v17 → v23）
+## 5. 最近改动历史（v17 → v24）
 
 - **v17（性能）**：SW 由"每次强制回源"改为缓存优先 + 后台更新(SWR)；滚动改 rAF 节流；重活前先让出绘制。
 - **v18**：拆书 / 稿件体检搬进 Web Worker（带主线程兜底）。
@@ -88,6 +89,7 @@
 - **v21**：新增「**AI 整理目录**」——`candidateLines` 抽候选行 → 模型挑真标题（排除目录页/正文句）→ `buildChapters` 收口 → 预览弹窗 → 应用 / 一键撤销。
 - **v22**：① 修复**朗读**（原代码首次点击就判"无语音"退出；改为等语音列表就绪再读、无中文语音也仍尝试、加 Chrome 长文保活、错误提示更明确）；② 新增**内置字体**（宋/楷），解决"手机只有黑体、换字体看不出变化"。
 - **v23**：① **图片版 / 文字层损坏的 PDF 可直接导入**——不再先弹"用 WPS 转"的说教：自动试认前 5 页 → 弹样张给用户验货 → 「识别全本（可随时停）」或「只读这 5 页」。OCR worker 常驻复用，去掉原先 90 秒死线；全本按页显示进度条、可中止，已识别的部分照存。② **PDF 文字层诊断分三类**——`image`（多数页无文字）/ `encoding`（有文字层但大量未映射字符，WPS 导出的可搜索 PDF 最常见）/ `sparse`（密度过低），报错文案分开说，不再一律叫"扫描版"。③ **行重建加固**——行容差按字号自适应（原固定 3.2pt，逐字抖动 1~2pt 的 OCR 文字层会被拆散）、优先用 `hasEOL` 断行、过滤 U+FFFD 与私用区字符、`width` 缺失时按字数估算 gap。④ 新增纯逻辑测试（`pdfItemsToLines` / `pdfTextQuality`，10 项断言）。
+- **v24**：① **影印模式**——图片版 / 文字层损坏的 PDF **不再转文字**：原文件整份存 `files` store，阅读时 pdf.js 按页渲染原图（等比缩放到可视宽度、devicePixelRatio 校正、白底填充），排版/插图/手写批注原样保留；「每页一章」使目录=页码表、进度条按页走。工具条（`index.html` 的 `#fxBar`）：缩放 −/%/+/适应宽度、**取本页文字**（只 OCR 当前页，弹窗可复制）、**转文字版**（整本 OCR，**另存**一个可检索副本，不动原书，可中途停）。② 导入时不再有「用 WPS 转」拦截弹窗，也不再跑 5 页试读——SCANNED 直接落成影印书，秒开。③ 备份明确不含 `files`（二进制进不了 JSON）。④ 拆书 / 检索 / 朗读对影印书有守卫提示，不会在空正文上瞎跑。⑤ 新增 `tests/db.test.mjs`（fake-indexeddb，验证 v5→v6 升级不丢数据、files 存取、删书连带清理、备份不含二进制，8 项断言）。
 
 ---
 
@@ -104,16 +106,15 @@
 
 ## 7. 当前真实状态 & 待办
 
-- **本地文件 = v23**（v22 全部内容 + 图片版 PDF 直读 + OCR 试读/可中止 + PDF 行重建加固）。
-- **线上 = v22（2026-10-19 实测复核）**：GitHub Pages 上 `index.html` 的 `?v=` 为 22、
-  `sw.js` 的 `CACHE` 为 `modu-reader-v22`、`vendor/fonts/noto-serif-sc-400.woff2` HTTP 200 且 1,506,904 字节完整；
-  本交接包与远端 `main` 的 31 个文件中有 29 个 blob sha 完全一致。
+- **本地文件 = v24**（影印模式：图片版 PDF 原页直读，不转文字）。
+- **线上 = v23（2026-10-19 08:41 实测）**：GitHub Pages 上 `index.html` 的 `?v=` 为 23、`sw.js` 的 `CACHE` 为 `modu-reader-v23`；
+  v23 的 8 个文件推送与逐字节复核均已完成。
   → 原「v22 尚未推送上线」的判断**已过期**，不要再按那个差集重推。
   **复核方式**：`python3 <skill>/scripts/publish.py <项目根>`（默认 dry-run，只列差异不推送），
   以它按 blob sha 算出的结果为准，不要以本文档的文字描述为准。
 - 待办：
-  1. **把 v23 推上线**（用户已在本地验收时）：`python3 <skill>/scripts/publish.py <项目根> --push --verify`。
-     差集应为 `index.html` / `styles.css` / `js/app.js` / `js/parse.js` / `sw.js` 五个文件。
+  1. **v24 待推送上线**（用户验收影印模式后）：`python3 <skill>/scripts/publish.py <项目根> --push --verify`。
+     预期差集：`index.html` / `styles.css` / `js/app.js` / `js/parse.js` / `js/db.js` / `sw.js` / 两份说明 / `tests/*`。
   2. 用户此前对"水章/序言第 3 项"的确认**未回复**（可能指"灵敏度三档"或"批注全量列表"），待其确认后补做。
   3. 安卓 **TWA** 打包前置（`assetlinks.json` 放到域名根 + 建 `gudeli123.github.io` 用户页仓库 + SHA-256 指纹）——用户已明确"先不用做"，**勿主动重启**。
   4. 【安全】提醒用户撤销曾泄露的 GitHub Token。
@@ -123,8 +124,13 @@
 ## 8. 已知限制（如实转达用户）
 
 - 人名识别、情绪/水章/钩子、伏笔/一致性等判断均为**启发式**，只给信号、不打分。
-- **图片版 PDF 的 OCR**：Tesseract 从 CDN 加载（首次约 15MB），每页 3–8 秒。中文竖排、繁体、旧印刷体
-  识别率一般；**只产出可读文本，不做版面还原**——图片、表格结构会丢。
+- **影印模式（v24 起图片版 PDF 的默认姿势）**：
+  - 好处是所见即原页；代价是**这本书不能全文检索、不能拆书、不能朗读**，除非另存「文字版」。
+  - 存储 = 原 PDF 大小（不重新编码）。一本 100MB 的扫描书就占 100MB，浏览器配额（常有几百 MB 上限）会吃紧，
+    超限时导入会明确报「空间不够」。备份不含原文件，换设备/清数据后需重新导入。
+  - 每翻一页现渲染，老机器上有零点几秒延迟；缩放上限 400%。
+- **影印书的 OCR（「取本页文字」/「转文字版」）**：Tesseract 从 CDN 加载（首次约 15MB，需联网），
+  每页 3–8 秒。中文竖排、繁体、旧印刷体识别率一般；**只产出可读文本，不做版面还原**。
 - AI 输出可能被 `maxTokens` 截断（已提供「继续写」）。
 - **朗读**依赖系统/浏览器的语音合成：部分设备（例如某些华为浏览器）可能**没有中文 TTS 语音** → 读不出声；代码已做"等语音就绪 + 无中文语音仍尝试 + 明确提示"。这不是网页能完全绕过的。
 - **字体**：宋/楷为**内置**字体，首次切换需联网下载 1–2MB；黑体用系统字体。设备缺字体时，未内置的字体无法显示。
